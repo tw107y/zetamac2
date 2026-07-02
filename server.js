@@ -110,6 +110,8 @@ io.on('connection', (socket) => {
         clearTimeout(game.players[existingNum]._graceTimer);
         game.players[existingNum]._graceTimer = null;
       }
+      // Cancel cleanup timer so game isn't deleted during reconnect
+      if (game._cleanupTimer) { clearTimeout(game._cleanupTimer); game._cleanupTimer = null; }
       game.players[existingNum].reservedFor = null;
       game.lastActivity = Date.now();
       socket.join(gameId);
@@ -144,6 +146,8 @@ io.on('connection', (socket) => {
       game.players[reservedSlot].id = socket.id;
       game.players[reservedSlot].connected = true;
       game.players[reservedSlot].reservedFor = null;
+      // Cancel cleanup timer so game isn't deleted during reconnect
+      if (game._cleanupTimer) { clearTimeout(game._cleanupTimer); game._cleanupTimer = null; }
       // Clear pending grace timer from the disconnect
       if (game.players[reservedSlot]._graceTimer) {
         clearTimeout(game.players[reservedSlot]._graceTimer);

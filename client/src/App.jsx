@@ -43,6 +43,9 @@ export default function App() {
         setScreen('menu');
         setGameData(null);
         setGameId(null);
+        setDc(null);
+        if (dcRef.current) { dcRef.current.close(); dcRef.current = null; }
+        if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
       } else {
         setGameId(path.slice(1));
       }
@@ -88,6 +91,9 @@ export default function App() {
 
       if (!host) {
         try {
+          // Close any existing connection before creating a new one (prevents leak on reconnect)
+          if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
+          if (dcRef.current) { dcRef.current.close(); dcRef.current = null; }
           const { pc, dc: dataChannel } = await joinerConnect(socket);
           pcRef.current = pc;
           dcRef.current = dataChannel;
