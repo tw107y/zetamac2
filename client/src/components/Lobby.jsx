@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-// ── Problem generation (moved from server to host client) ──────────────
+// ── Problem generation ────────────────────────────────────────────────
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -12,21 +12,16 @@ function generateProblems(count = 120) {
     const op = ops[randInt(0, 3)];
     let a, b, answer;
     switch (op) {
-      case '+':
-        a = randInt(2, 100); b = randInt(2, 100); answer = a + b; break;
-      case '-':
-        a = randInt(2, 100); b = randInt(2, a); answer = a - b; break;
-      case '×':
-        a = randInt(2, 12); b = randInt(2, 100); answer = a * b; break;
-      case '÷':
-        b = randInt(2, 12); answer = randInt(2, 100); a = answer * b; break;
+      case '+': a = randInt(2, 100); b = randInt(2, 100); answer = a + b; break;
+      case '-': a = randInt(2, 100); b = randInt(2, a); answer = a - b; break;
+      case '×': a = randInt(2, 12); b = randInt(2, 100); answer = a * b; break;
+      case '÷': b = randInt(2, 12); answer = randInt(2, 100); a = answer * b; break;
     }
     problems.push({ a, b, op, answer });
   }
   return problems;
 }
 
-// ── Helper to send JSON through data channel ──────────────────────────
 function send(dc, msg) {
   if (dc && dc.readyState === 'open') {
     dc.send(JSON.stringify(msg));
@@ -36,14 +31,20 @@ function send(dc, msg) {
 export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, onGameStart }) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
-  const [opponentConnected, setOpponentConnected] = useState(false);
   const [countdown, setCountdown] = useState(null);
   const [copied, setCopied] = useState(false);
-  const countdownRef = useRef(null);
+
   const readyRef = useRef(false);
+  const countdownRef = useRef(null);
   const gameDuration = 60;
 
-  // Listen for data channel messages
+  // When data channel opens, send initial ready state so opponent knows we're here
+  useEffect(() => {
+    if (!dc) return;
+    send(dc, { type: 'ready-change', ready: false });
+  }, [dc]);
+
+  // ── SINGLE message handler: both host and joiner use the same logic ──
   useEffect(() => {
     if (!dc) return;
 
@@ -51,22 +52,34 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
       const msg = JSON.parse(e.data);
 
       switch (msg.type) {
-        case 'lobby-update':
-          setOpponentReady(msg.p2Ready ?? msg.p1Ready ?? false);
-          setOpponentConnected(msg.p2Connected ?? msg.p1Connected ?? false);
-          break;
-        case 'countdown':
-          setCountdown(msg.num);
-          if (msg.num === 0) {
-            // Countdown done — expect game-start next
+        case 'ready-change':
+          // Opponent toggled their ready state
+          setOpponentReady(msg.ready);
+          // If host and both ready, start countdown
+          if (isHost && readyRef.current && msg.ready) {
+            startCountdown();
           }
           break;
+
+        case 'countdown':
+          setCountdown(msg.num);
+          break;
+
         case 'game-start':
           setCountdown(null);
           onGameStart(msg);
           break;
+
+        case 'restart':
+          setReady(false);
+          readyRef.current = false;
+          setOpponentReady(false);
+          setCountdown(null);
+          break;
+
         case 'back-to-lobby':
           setReady(false);
+          readyRef.current = false;
           setOpponentReady(false);
           setCountdown(null);
           break;
@@ -75,21 +88,22 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
 
     dc.addEventListener('message', handleMessage);
     return () => dc.removeEventListener('message', handleMessage);
-  }, [dc, onGameStart]);
+  }, [dc, isHost, onGameStart]);
 
-  // Host: listen for opponent-left via socket
+  // ── Socket: opponent-left ───────────────────────────────────────────
   useEffect(() => {
     socket.on('opponent-left', () => {
-      setOpponentConnected(false);
+      // opponent-connected state is implicit: dc is open = connected
     });
     return () => socket.off('opponent-left');
   }, [socket]);
 
+  // ── User actions ────────────────────────────────────────────────────
   const handleReady = () => {
     const newReady = !ready;
     setReady(newReady);
     readyRef.current = newReady;
-    send(dc, { type: 'player-ready', ready: newReady });
+    send(dc, { type: 'ready-change', ready: newReady });
   };
 
   const handleCopy = () => {
@@ -98,43 +112,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Host: check if both ready → start countdown
-  useEffect(() => {
-    if (!isHost || !dc) return;
-
-    // When joiner sends player-ready, update opponentReady
-    function handleHostMessage(e) {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'player-ready') {
-        const oppReady = msg.ready;
-        setOpponentReady(oppReady);
-
-        // Broadcast updated lobby state to joiner
-        send(dc, {
-          type: 'lobby-update',
-          p1Ready: readyRef.current,
-          p2Ready: oppReady,
-          p1Connected: true,
-          p2Connected: true,
-        });
-
-        // Check if both ready
-        if (readyRef.current && oppReady) {
-          startCountdown();
-        }
-      }
-      if (msg.type === 'restart') {
-        // Reset lobby
-        setReady(false);
-        setOpponentReady(false);
-        send(dc, { type: 'back-to-lobby' });
-      }
-    }
-
-    dc.addEventListener('message', handleHostMessage);
-    return () => dc.removeEventListener('message', handleHostMessage);
-  }, [isHost, dc]);
-
+  // ── Countdown (host only) ───────────────────────────────────────────
   function startCountdown() {
     let count = 3;
     send(dc, { type: 'countdown', num: count });
@@ -148,7 +126,6 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
       if (count <= 0) {
         clearInterval(countdownRef.current);
         countdownRef.current = null;
-        // Generate problems and start
         const problems = generateProblems(120);
         const startTime = Date.now();
         const data = { type: 'game-start', problems, startTime, duration: gameDuration };
@@ -160,6 +137,8 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
   }
 
   const opponentNum = playerNum === 1 ? 2 : 1;
+  // Connected state is implicit: if dc exists, opponent is connected via WebRTC
+  const opponentConnected = !!dc;
 
   if (countdown !== null) {
     return (
