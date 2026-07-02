@@ -72,6 +72,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
           setScores(finalScores);
           if (finalHpMsg) setFinalHp(finalHpMsg);
           if (socket) socket.emit('game-ended');
+          if (onGameEndRef.current) onGameEndRef.current(finalScores);
         }, 500);
       }
     };

@@ -136,6 +136,7 @@ export default function App() {
   const handleCreateGame = useCallback((mode) => {
     setError(null);
     setGameMode(mode);
+    setLastWinner(null);
     if (dcRef.current) {
       dcRef.current.close();
       dcRef.current = null;

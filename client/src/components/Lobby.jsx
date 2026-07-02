@@ -116,7 +116,8 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
   // ── Socket: opponent-left ───────────────────────────────────────────
   useEffect(() => {
     const handler = () => {
-      // opponent-connected state is implicit: dc is open = connected
+      setOpponentReady(false);
+      opponentReadyRef.current = false;
     };
     socket.on('opponent-left', handler);
     return () => socket.off('opponent-left', handler);

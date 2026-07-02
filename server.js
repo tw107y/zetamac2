@@ -84,6 +84,12 @@ io.on('connection', (socket) => {
     if (existingNum) {
       // Same socket reconnecting (Socket.IO reconnect)
       game.players[existingNum].connected = true;
+      // Clear any pending grace timer from a previous disconnect
+      if (game.players[existingNum]._graceTimer) {
+        clearTimeout(game.players[existingNum]._graceTimer);
+        game.players[existingNum]._graceTimer = null;
+      }
+      game.players[existingNum].reservedFor = null;
       game.lastActivity = Date.now();
       socket.join(gameId);
       socket.emit('joined', { playerNum: existingNum, gameId, isHost: existingNum === 1, mode: game.mode });
@@ -117,6 +123,11 @@ io.on('connection', (socket) => {
       game.players[reservedSlot].id = socket.id;
       game.players[reservedSlot].connected = true;
       game.players[reservedSlot].reservedFor = null;
+      // Clear pending grace timer from the disconnect
+      if (game.players[reservedSlot]._graceTimer) {
+        clearTimeout(game.players[reservedSlot]._graceTimer);
+        game.players[reservedSlot]._graceTimer = null;
+      }
       game.lastActivity = Date.now();
       socket.join(gameId);
       socket.emit('joined', { playerNum: reservedSlot, gameId, isHost: reservedSlot === 1, mode: game.mode });
@@ -211,6 +222,29 @@ io.on('connection', (socket) => {
       }
     }
     console.log(`[game] ${game.id} ended (state=lobby)`);
+  });
+
+  // Explicit leave (client navigates away or creates new game)
+  socket.on('leave-game', () => {
+    const game = findGameForSocket(socket.id);
+    if (!game) return;
+    const pn = getPlayerNum(game, socket.id);
+    if (!pn) return;
+    // Leave the room and free the slot
+    socket.leave(game.id);
+    game.players[pn].id = null;
+    game.players[pn].connected = false;
+    game.players[pn].reservedFor = null;
+    if (game.players[pn]._graceTimer) {
+      clearTimeout(game.players[pn]._graceTimer);
+      game.players[pn]._graceTimer = null;
+    }
+    const otherPn = pn === 1 ? 2 : 1;
+    if (game.players[otherPn].id) {
+      io.to(game.players[otherPn].id).emit('opponent-left');
+      io.to(game.players[otherPn].id).emit('lobby-update', lobbyState(game));
+    }
+    console.log(`[leave] ${socket.id} left ${game.id}`);
   });
 
   // Disconnect

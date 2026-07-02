@@ -27,12 +27,12 @@ function initAudioOnInteraction() {
 }
 initAudioOnInteraction();
 
-function playTone(freq, duration, type = 'sine', vol = 0.08) {
+async function playTone(freq, duration, type = 'sine', vol = 0.08) {
   try {
     const c = getCtx();
     // Resume context if suspended (e.g., after tab loses focus)
     if (c.state === 'suspended') {
-      c.resume();
+      await c.resume();
     }
     const osc = c.createOscillator();
     const gain = c.createGain();
