@@ -35,6 +35,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
   const [copied, setCopied] = useState(false);
 
   const readyRef = useRef(false);
+  const opponentReadyRef = useRef(false);
   const countdownRef = useRef(null);
   const gameDuration = 60;
 
@@ -55,6 +56,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
         case 'ready-change':
           // Opponent toggled their ready state
           setOpponentReady(msg.ready);
+          opponentReadyRef.current = msg.ready;
           // If host and both ready, start countdown
           if (isHost && readyRef.current && msg.ready) {
             startCountdown();
@@ -74,6 +76,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
           setReady(false);
           readyRef.current = false;
           setOpponentReady(false);
+          opponentReadyRef.current = false;
           setCountdown(null);
           break;
 
@@ -81,6 +84,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
           setReady(false);
           readyRef.current = false;
           setOpponentReady(false);
+          opponentReadyRef.current = false;
           setCountdown(null);
           break;
       }
@@ -104,6 +108,11 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
     setReady(newReady);
     readyRef.current = newReady;
     send(dc, { type: 'ready-change', ready: newReady });
+
+    // If host just became ready and opponent was already ready, start countdown
+    if (isHost && newReady && opponentReadyRef.current) {
+      startCountdown();
+    }
   };
 
   const handleCopy = () => {
