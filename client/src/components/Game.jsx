@@ -6,7 +6,7 @@ function send(dc, msg) {
   }
 }
 
-export default function Game({ dc, problems, startTime, duration, playerNum, isHost, onBackToLobby }) {
+export default function Game({ dc, mode, problems, startTime, duration, playerNum, isHost, onBackToLobby }) {
   const [timeLeft, setTimeLeft] = useState(duration);
   const [myProblemIndex, setMyProblemIndex] = useState(0);
   const [myInput, setMyInput] = useState('');
@@ -91,13 +91,32 @@ export default function Game({ dc, problems, startTime, duration, playerNum, isH
 
       switch (msg.type) {
         case 'player-update':
-          // Opponent's state update
-          setOpponentState({
-            problemIndex: msg.problemIndex,
-            input: msg.input,
-            score: msg.score,
-          });
+          // Opponent's state update (classic mode)
+          if (mode !== 'duel') {
+            setOpponentState({
+              problemIndex: msg.problemIndex,
+              input: msg.input,
+              score: msg.score,
+            });
+          }
           oppScoreRef.current = msg.score;
+          break;
+
+        case 'duel-claim':
+          // Duel mode: opponent solved current problem first
+          // Advance past the claimed problem (skip it if we haven't solved it yet)
+          if (msg.problemIndex >= problemIndexRef.current) {
+            problemIndexRef.current = msg.problemIndex + 1;
+            setMyProblemIndex(msg.problemIndex + 1);
+            setMyInput('');
+            inputRef2.current = '';
+          }
+          oppScoreRef.current = msg.score;
+          setOpponentState(prev => ({
+            ...prev,
+            problemIndex: msg.problemIndex + 1,
+            score: msg.score,
+          }));
           break;
 
         case 'game-over':
@@ -155,7 +174,14 @@ export default function Game({ dc, problems, startTime, duration, playerNum, isH
         scoreRef.current = newScore;
         problemIndexRef.current = newIndex;
         inputRef2.current = '';
-        emitUpdate(newIndex, '', newScore);
+
+        if (mode === 'duel') {
+          // Duel: claim this problem, force-emit immediately
+          lastEmitRef.current = 0;
+          send(dc, { type: 'duel-claim', problemIndex: myProblemIndex, score: newScore });
+        } else {
+          emitUpdate(newIndex, '', newScore);
+        }
         return;
       }
     }
