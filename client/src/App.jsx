@@ -12,7 +12,8 @@ export default function App() {
   const [playerNum, setPlayerNum] = useState(null);
   const [gameData, setGameData] = useState(null);
   const [error, setError] = useState(null);
-  const dcRef = useRef(null); // RTCDataChannel — the P2P game channel
+  const [dcReady, setDcReady] = useState(false); // triggers re-render when dc connects
+  const dcRef = useRef(null);
 
   // Connect socket on mount
   useEffect(() => {
@@ -44,32 +45,29 @@ export default function App() {
       setError(null);
 
       if (host) {
-        // Host: wait for peer-joined, then start WebRTC
+        // Host: go to lobby immediately, set up WebRTC when peer joins
+        setScreen('lobby');
+
         socket.once('peer-joined', async () => {
           try {
             const { dc } = await hostConnect(socket);
             dcRef.current = dc;
-            setScreen('lobby');
+            setDcReady(true);
           } catch (err) {
             setError(err.message);
           }
         });
       } else {
-        // Joiner: start WebRTC immediately (waits for offer)
+        // Joiner: establish WebRTC first, then show lobby
         try {
           const { dc } = await joinerConnect(socket);
           dcRef.current = dc;
+          setDcReady(true);
           setScreen('lobby');
         } catch (err) {
           setError(err.message);
         }
       }
-    });
-
-    socket.on('game-state', (data) => {
-      // Reconnect during game — restore state
-      setGameData(data);
-      if (data.state === 'playing') setScreen('game');
     });
 
     socket.on('error', ({ message }) => setError(message));
@@ -80,17 +78,24 @@ export default function App() {
       window.history.pushState({}, '', '/');
     });
 
+    // Listen for opponent-left while in lobby (via socket)
+    socket.on('opponent-left', () => {
+      // dc might have dropped — the lobby handles this
+    });
+
     return () => {
       socket.off('game-created');
       socket.off('joined');
-      socket.off('game-state');
       socket.off('error');
       socket.off('lobby-closed');
+      socket.off('opponent-left');
     };
   }, []);
 
   const handleCreateGame = useCallback(() => {
     setError(null);
+    setDcReady(false);
+    dcRef.current = null;
     socket.emit('create-game');
   }, []);
 
@@ -115,7 +120,7 @@ export default function App() {
     );
   }
 
-  if (screen === 'lobby' && dc) {
+  if (screen === 'lobby') {
     return (
       <Lobby
         dc={dc}

@@ -45,6 +45,8 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
 
   // Listen for data channel messages
   useEffect(() => {
+    if (!dc) return;
+
     function handleMessage(e) {
       const msg = JSON.parse(e.data);
 
@@ -98,7 +100,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
 
   // Host: check if both ready → start countdown
   useEffect(() => {
-    if (!isHost) return;
+    if (!isHost || !dc) return;
 
     // When joiner sends player-ready, update opponentReady
     function handleHostMessage(e) {
@@ -131,7 +133,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
 
     dc.addEventListener('message', handleHostMessage);
     return () => dc.removeEventListener('message', handleHostMessage);
-  }, [isHost, dc, ready]);
+  }, [isHost, dc]);
 
   function startCountdown() {
     let count = 3;
