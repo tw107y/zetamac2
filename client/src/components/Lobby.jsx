@@ -28,7 +28,7 @@ function send(dc, msg) {
   }
 }
 
-export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, onGameStart }) {
+export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, error, onGameStart }) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
   const [countdown, setCountdown] = useState(null);
@@ -137,7 +137,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, error, on
         countdownRef.current = null;
         const problems = generateProblems(120);
         const startTime = Date.now();
-        const data = { type: 'game-start', problems, startTime, duration: gameDuration };
+        const data = { type: 'game-start', problems, startTime, duration: gameDuration, mode };
         send(dc, data);
         setCountdown(null);
         onGameStart(data);

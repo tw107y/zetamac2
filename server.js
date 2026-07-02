@@ -14,9 +14,10 @@ const games = new Map();
 const LOBBY_TTL = 10 * 60 * 1000; // 10 minutes
 const CLEANUP_INTERVAL = 60 * 1000;
 
-function createGame(id) {
+function createGame(id, mode) {
   return {
     id,
+    mode: mode || 'classic',
     players: {
       1: { id: null, connected: false },
       2: { id: null, connected: false },
@@ -53,15 +54,16 @@ io.on('connection', (socket) => {
   console.log(`[connect] ${socket.id}`);
 
   // Create a new game lobby
-  socket.on('create-game', () => {
+  socket.on('create-game', (data = {}) => {
     const gameId = crypto.randomUUID().slice(0, 6);
-    const game = createGame(gameId);
+    const mode = data.mode || 'classic';
+    const game = createGame(gameId, mode);
     game.players[1] = { id: socket.id, connected: true };
     games.set(gameId, game);
     socket.join(gameId);
-    socket.emit('game-created', { gameId });
-    socket.emit('joined', { playerNum: 1, gameId, isHost: true });
-    console.log(`[lobby] created ${gameId} (host: ${socket.id})`);
+    socket.emit('game-created', { gameId, mode });
+    socket.emit('joined', { playerNum: 1, gameId, isHost: true, mode });
+    console.log(`[lobby] created ${gameId} mode=${mode} (host: ${socket.id})`);
   });
 
   // Join an existing game lobby
@@ -101,7 +103,7 @@ io.on('connection', (socket) => {
     game.players[assigned] = { id: socket.id, connected: true };
     game.lastActivity = Date.now();
     socket.join(gameId);
-    socket.emit('joined', { playerNum: assigned, gameId, isHost: false });
+    socket.emit('joined', { playerNum: assigned, gameId, isHost: false, mode: game.mode });
     io.to(gameId).emit('lobby-update', lobbyState(game));
 
     // Tell host to initiate WebRTC

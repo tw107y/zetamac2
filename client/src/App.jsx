@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import socket from './socket';
 import { hostConnect, joinerConnect } from './webrtc';
-import MainMenu from './components/MainMenu';
+import GameModeSelector from './components/GameModeSelector';
 import Lobby from './components/Lobby';
 import Game from './components/Game';
 
@@ -10,12 +10,12 @@ export default function App() {
   const [gameId, setGameId] = useState(null);
   const [isHost, setIsHost] = useState(false);
   const [playerNum, setPlayerNum] = useState(null);
+  const [gameMode, setGameMode] = useState('classic');
   const [gameData, setGameData] = useState(null);
   const [error, setError] = useState(null);
-  const [dcReady, setDcReady] = useState(false); // triggers re-render when dc connects
+  const [dcReady, setDcReady] = useState(false);
   const dcRef = useRef(null);
 
-  // Connect socket on mount
   useEffect(() => {
     socket.connect();
     return () => { socket.disconnect(); };
@@ -33,21 +33,21 @@ export default function App() {
 
   // Socket event listeners (signaling only)
   useEffect(() => {
-    socket.on('game-created', ({ gameId: id }) => {
+    socket.on('game-created', ({ gameId: id, mode }) => {
       setGameId(id);
+      setGameMode(mode || 'classic');
       window.history.pushState({}, '', `/${id}`);
     });
 
-    socket.on('joined', async ({ playerNum: pn, gameId: id, isHost: host }) => {
+    socket.on('joined', async ({ playerNum: pn, gameId: id, isHost: host, mode }) => {
       setPlayerNum(pn);
       setGameId(id);
       setIsHost(host);
+      setGameMode(mode || 'classic');
       setError(null);
 
       if (host) {
-        // Host: go to lobby immediately, set up WebRTC when peer joins
         setScreen('lobby');
-
         socket.once('peer-joined', async () => {
           try {
             const { dc } = await hostConnect(socket);
@@ -58,7 +58,6 @@ export default function App() {
           }
         });
       } else {
-        // Joiner: establish WebRTC first, then show lobby
         try {
           const { dc } = await joinerConnect(socket);
           dcRef.current = dc;
@@ -78,10 +77,7 @@ export default function App() {
       window.history.pushState({}, '', '/');
     });
 
-    // Listen for opponent-left while in lobby (via socket)
-    socket.on('opponent-left', () => {
-      // dc might have dropped — the lobby handles this
-    });
+    socket.on('opponent-left', () => {});
 
     return () => {
       socket.off('game-created');
@@ -92,17 +88,16 @@ export default function App() {
     };
   }, []);
 
-  const handleCreateGame = useCallback(() => {
+  const handleCreateGame = useCallback((mode) => {
     setError(null);
+    setGameMode(mode);
     setDcReady(false);
-    // Close any existing data channel
     if (dcRef.current) {
       dcRef.current.close();
       dcRef.current = null;
     }
-    // Leave old game room before creating new one
     socket.emit('leave-game');
-    socket.emit('create-game');
+    socket.emit('create-game', { mode });
   }, []);
 
   const handleBackToLobby = useCallback(() => {
@@ -116,6 +111,7 @@ export default function App() {
     return (
       <Game
         dc={dc}
+        mode={gameMode}
         problems={gameData.problems}
         startTime={gameData.startTime}
         duration={gameData.duration}
@@ -134,6 +130,7 @@ export default function App() {
         gameId={gameId}
         playerNum={playerNum}
         isHost={isHost}
+        mode={gameMode}
         error={error}
         onGameStart={(data) => {
           setGameData(data);
@@ -143,5 +140,5 @@ export default function App() {
     );
   }
 
-  return <MainMenu onCreateGame={handleCreateGame} error={error} />;
+  return <GameModeSelector onCreateGame={handleCreateGame} error={error} />;
 }
