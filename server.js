@@ -236,6 +236,8 @@ io.on('connection', (socket) => {
     if (!game) return;
     game.state = 'lobby';
     game.lastActivity = Date.now();
+    // Cancel any pending cleanup timer
+    if (game._cleanupTimer) { clearTimeout(game._cleanupTimer); game._cleanupTimer = null; }
     // Free any reserved slots now that game is over
     for (const slot of [1, 2]) {
       if (game.players[slot]._graceTimer) {
