@@ -187,6 +187,18 @@ export default function App() {
     }
   }, [playerNum]);
 
+  const handleLeaveLobby = useCallback(() => {
+    socket.emit('leave-game');
+    setScreen('menu');
+    setGameData(null);
+    setGameId(null);
+    setError(null);
+    window.history.pushState({}, '', '/');
+    if (dcRef.current) { dcRef.current.close(); dcRef.current = null; }
+    if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
+    setDc(null);
+  }, []);
+
   const handleGameStart = useCallback((data) => {
     setGameData(data);
     setScreen('game');
@@ -241,6 +253,7 @@ export default function App() {
         lastWinner={lastWinner}
         error={error}
         onGameStart={handleGameStart}
+        onLeaveLobby={handleLeaveLobby}
       />
     );
   }

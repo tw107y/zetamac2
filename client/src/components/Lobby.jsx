@@ -29,7 +29,7 @@ function send(dc, msg) {
   }
 }
 
-export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, lastWinner, error, onGameStart }) {
+export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, lastWinner, error, onGameStart, onLeaveLobby }) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
   const [countdown, setCountdown] = useState(null);
@@ -229,6 +229,10 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
         <p style={styles.waiting}>Waiting for opponent to join...</p>
       )}
       {error && <p style={{ color: '#ff6b6b' }}>{error}</p>}
+
+      <button onClick={onLeaveLobby} style={styles.leaveBtn}>
+        Leave Lobby
+      </button>
     </div>
   );
 }
@@ -255,6 +259,7 @@ const styles = {
   readyBtn: { background: '#4ecca3', color: '#1a1a2e', fontSize: '1.2rem', padding: '12px 36px' },
   unreadyBtn: { background: '#555', color: '#fff', fontSize: '1.2rem', padding: '12px 36px' },
   waiting: { color: '#888', marginTop: '8px' },
+  leaveBtn: { marginTop: '12px', background: '#333', color: '#e94560', fontSize: '0.95rem', padding: '8px 24px', border: '1px solid #555' },
   overlay: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' },
   countdownNum: { fontSize: '8rem', fontWeight: 900, color: '#e94560' },
 };

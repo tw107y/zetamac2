@@ -251,20 +251,38 @@ io.on('connection', (socket) => {
     console.log(`[game] ${game.id} ended (state=lobby)`);
   });
 
-  // Explicit leave (client navigates away or creates new game)
+  // Explicit leave (client navigates away, creates new game, or clicks Leave Lobby)
   socket.on('leave-game', () => {
     const game = findGameForSocket(socket.id);
     if (!game) return;
     const pn = getPlayerNum(game, socket.id);
     if (!pn) return;
 
-    // If host leaves, kill the whole game
+    // In lobby state, leaving kills the entire game for both players
+    if (game.state === 'lobby') {
+      for (const slot of [1, 2]) {
+        if (game.players[slot]._graceTimer) {
+          clearTimeout(game.players[slot]._graceTimer);
+          game.players[slot]._graceTimer = null;
+        }
+      }
+      if (game._cleanupTimer) clearTimeout(game._cleanupTimer);
+      const otherPn = pn === 1 ? 2 : 1;
+      if (game.players[otherPn].id && game.players[otherPn].connected) {
+        io.to(game.players[otherPn].id).emit('lobby-closed', { message: 'The other player left the lobby.' });
+      }
+      games.delete(game.id);
+      console.log(`[leave] ${game.id} deleted (player ${pn} left lobby)`);
+      return;
+    }
+
+    // During game, host leaving kills the game
     if (pn === 1) {
       killGame(game, 'Host left the game');
       return;
     }
 
-    // Non-host: leave the room and free the slot
+    // Non-host during game: leave the room and free the slot
     socket.leave(game.id);
     game.players[pn].id = null;
     game.players[pn].connected = false;
