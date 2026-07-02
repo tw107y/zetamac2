@@ -18,7 +18,7 @@ export default function Game({ dc, problems, startTime, duration, playerNum, isH
   const inputRef = useRef(null);
   const lastEmitRef = useRef(0);
   const gameOverRef = useRef(false);
-  const finalScoreSentRef = useRef(false);
+  const gracePeriodRef = useRef(false); // true after timer hits 0, before final scores
   // Refs for timer callback
   const scoreRef = useRef(0);
   const problemIndexRef = useRef(0);
@@ -35,17 +35,20 @@ export default function Game({ dc, problems, startTime, duration, playerNum, isH
       const remaining = Math.max(0, Math.ceil(duration - elapsed));
       setTimeLeft(remaining);
 
-      if (remaining <= 0 && !gameOverRef.current && !finalScoreSentRef.current) {
-        finalScoreSentRef.current = true;
-        // Send game-over to joiner
-        const myScoreFinal = scoreRef.current;
-        const oppScoreFinal = oppScoreRef.current;
-        // Host is player 1, joiner is player 2
-        const finalScores = { 1: myScoreFinal, 2: oppScoreFinal };
-        send(dc, { type: 'game-over', scores: finalScores });
+      if (remaining <= 0 && !gracePeriodRef.current) {
+        // Timer hit 0 — enter 500ms grace period to collect final scores
+        gracePeriodRef.current = true;
+        // Block local input now (game is effectively over)
         gameOverRef.current = true;
         setGameOver(true);
-        setScores(finalScores);
+
+        setTimeout(() => {
+          const myScoreFinal = scoreRef.current;
+          const oppScoreFinal = oppScoreRef.current;
+          const finalScores = { 1: myScoreFinal, 2: oppScoreFinal };
+          send(dc, { type: 'game-over', scores: finalScores });
+          setScores(finalScores);
+        }, 500);
       }
     };
 
@@ -54,7 +57,7 @@ export default function Game({ dc, problems, startTime, duration, playerNum, isH
     return () => clearInterval(interval);
   }, [isHost, startTime, duration, dc]);
 
-  // ── Joiner timer (display only, host is authoritative) ──────────────
+  // ── Joiner timer (display + force-emit final score) ─────────────────
   useEffect(() => {
     if (isHost) return;
 
@@ -62,12 +65,24 @@ export default function Game({ dc, problems, startTime, duration, playerNum, isH
       const elapsed = (Date.now() - startTime) / 1000;
       const remaining = Math.max(0, Math.ceil(duration - elapsed));
       setTimeLeft(remaining);
+
+      if (remaining <= 0 && !gracePeriodRef.current) {
+        gracePeriodRef.current = true;
+        // Force-emit final score to host (bypass throttle)
+        lastEmitRef.current = 0;
+        send(dc, {
+          type: 'player-update',
+          problemIndex: problemIndexRef.current,
+          input: inputRef2.current,
+          score: scoreRef.current,
+        });
+      }
     };
 
     tick();
     const interval = setInterval(tick, 100);
     return () => clearInterval(interval);
-  }, [isHost, startTime, duration]);
+  }, [isHost, startTime, duration, dc]);
 
   // ── Data channel messages ───────────────────────────────────────────
   useEffect(() => {
