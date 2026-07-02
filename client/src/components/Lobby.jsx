@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { playCountdown, playGameStart } from '../sounds';
 
 // ── Problem generation ────────────────────────────────────────────────
 function randInt(min, max) {
@@ -28,7 +29,7 @@ function send(dc, msg) {
   }
 }
 
-export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, error, onGameStart }) {
+export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, lastWinner, error, onGameStart }) {
   const [ready, setReady] = useState(false);
   const [opponentReady, setOpponentReady] = useState(false);
   const [countdown, setCountdown] = useState(null);
@@ -124,15 +125,18 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, err
   // ── Countdown (host only) ───────────────────────────────────────────
   function startCountdown() {
     let count = 3;
+    playCountdown(count);
     send(dc, { type: 'countdown', num: count });
     setCountdown(count);
 
     countdownRef.current = setInterval(() => {
       count--;
+      playCountdown(count);
       send(dc, { type: 'countdown', num: count });
       setCountdown(count);
 
       if (count <= 0) {
+        playGameStart();
         clearInterval(countdownRef.current);
         countdownRef.current = null;
         const problems = generateProblems(120);
@@ -171,7 +175,10 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, err
 
       <div style={styles.players}>
         <div style={{ ...styles.playerCard, borderColor: playerNum === 1 ? '#e94560' : '#333' }}>
-          <div style={styles.playerLabel}>You (Player {playerNum}){isHost ? ' • Host' : ''}</div>
+          <div style={styles.playerLabel}>
+            {lastWinner?.playerNum === playerNum && <span title={`${lastWinner.streak}-game streak`}>👑 </span>}
+            You (Player {playerNum}){isHost ? ' • Host' : ''}
+          </div>
           <div style={{ color: '#4ecca3' }}>Connected</div>
           <div style={{ color: ready ? '#4ecca3' : '#888' }}>
             {ready ? '✓ Ready' : 'Not Ready'}

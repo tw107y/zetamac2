@@ -14,6 +14,7 @@ export default function App() {
   const [gameData, setGameData] = useState(null);
   const [error, setError] = useState(null);
   const [dcReady, setDcReady] = useState(false);
+  const [lastWinner, setLastWinner] = useState(null); // { playerNum, streak }
   const dcRef = useRef(null);
 
   useEffect(() => {
@@ -105,6 +106,22 @@ export default function App() {
     setScreen('lobby');
   }, []);
 
+  const handleGameEnd = useCallback((scores) => {
+    const myScore = scores[playerNum];
+    const oppScore = scores[playerNum === 1 ? 2 : 1];
+    if (myScore > oppScore) {
+      setLastWinner(prev => ({
+        playerNum,
+        streak: prev?.playerNum === playerNum ? prev.streak + 1 : 1,
+      }));
+    } else if (myScore < oppScore) {
+      setLastWinner(prev => ({
+        playerNum: playerNum === 1 ? 2 : 1,
+        streak: prev?.playerNum === (playerNum === 1 ? 2 : 1) ? prev.streak + 1 : 1,
+      }));
+    }
+  }, [playerNum]);
+
   const dc = dcRef.current;
 
   if (screen === 'game' && dc && gameData) {
@@ -118,6 +135,7 @@ export default function App() {
         playerNum={playerNum}
         isHost={isHost}
         onBackToLobby={handleBackToLobby}
+        onGameEnd={handleGameEnd}
       />
     );
   }
@@ -131,6 +149,7 @@ export default function App() {
         playerNum={playerNum}
         isHost={isHost}
         mode={gameMode}
+        lastWinner={lastWinner}
         error={error}
         onGameStart={(data) => {
           setGameData(data);

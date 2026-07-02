@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { playCorrect, playWin, playLose } from '../sounds';
 
 function send(dc, msg) {
   if (dc && dc.readyState === 'open') {
@@ -6,7 +7,7 @@ function send(dc, msg) {
   }
 }
 
-export default function Game({ dc, mode, problems, startTime, duration, playerNum, isHost, onBackToLobby }) {
+export default function Game({ dc, mode, problems, startTime, duration, playerNum, isHost, onBackToLobby, onGameEnd }) {
   const [timeLeft, setTimeLeft] = useState(duration);
   const [myProblemIndex, setMyProblemIndex] = useState(0);
   const [myInput, setMyInput] = useState('');
@@ -28,9 +29,16 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
   const inputRef2 = useRef('');
   const oppScoreRef = useRef(0);
   const oppHpRef = useRef(100);
+  // Stats tracking
+  const totalAnsweredRef = useRef(0);
+  const correctRef = useRef(0);
+  const bestStreakRef = useRef(0);
+  const fastestRef = useRef(Infinity);
+  const [showStats, setShowStats] = useState(false);
 
   const isHealth = mode === 'health';
   const isDuel = mode === 'duel';
+  const isBlind = timeLeft <= 15 && timeLeft > 0;
 
   // ── Host timer (authoritative) ──────────────────────────────────────
   useEffect(() => {
@@ -112,6 +120,11 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
           gameOverRef.current = true;
           setGameOver(true);
           setScores(msg.scores);
+          if (onGameEnd) onGameEnd(msg.scores);
+          if (msg.scores) {
+            const won = msg.scores[playerNum] > msg.scores[playerNum === 1 ? 2 : 1];
+            if (won) playWin(); else playLose();
+          }
           break;
 
         case 'restart':
@@ -154,9 +167,18 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
         const newIndex = myProblemIndex + 1;
         const now = Date.now();
         const timeSinceLast = now - lastAnswerTime;
+        const solveTime = now - lastEmitRef.current || 0;
+
+        // Stats
+        totalAnsweredRef.current++;
+        correctRef.current++;
+        if (solveTime > 0 && solveTime < fastestRef.current) fastestRef.current = solveTime;
+
         const newStreak = timeSinceLast < 1500 && lastAnswerTime > 0 ? streak + 1 : 1;
+        if (newStreak > bestStreakRef.current) bestStreakRef.current = newStreak;
         setStreak(newStreak);
         setLastAnswerTime(now);
+        playCorrect();
 
         setMyScore(newScore);
         setMyProblemIndex(newIndex);
@@ -213,10 +235,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
   };
 
   const handleRestart = () => {
-    if (isHost) {
-      send(dc, { type: 'restart' });
-      onBackToLobby();
-    }
+    onBackToLobby();
   };
 
   const handleContainerClick = () => {
@@ -301,14 +320,28 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
               <div style={styles.gameOverText}>
                 {scores ? (
                   <>
-                    <div style={{ fontSize: '2rem', marginBottom: '8px' }}>
-                      {myFinalScore > (scores[opponentNum] || 0) ? '🏆 You Won!'
+                    <div style={styles.trophy}>
+                      {myFinalScore > (scores[opponentNum] || 0) ? '🏆' : '🎮'}
+                    </div>
+                    <div style={{ fontSize: '1.8rem', fontWeight: 800, marginBottom: '4px' }}>
+                      {myFinalScore > (scores[opponentNum] || 0) ? 'You Won!'
                         : myFinalScore < (scores[opponentNum] || 0) ? 'You Lost'
-                        : "🤝 It's a Tie!"}
+                        : "It's a Tie!"}
                     </div>
-                    <div style={{ fontSize: '1.2rem', color: '#888' }}>
-                      {myFinalScore} – {scores[opponentNum]}
+                    <div style={{ fontSize: '1rem', color: '#888', marginBottom: '12px' }}>
+                      Player {playerNum} {myFinalScore} – {scores[opponentNum]} Player {opponentNum}
                     </div>
+                    <button onClick={() => setShowStats(!showStats)} style={styles.statsToggle}>
+                      {showStats ? 'Hide Stats' : '📊 Stats'}
+                    </button>
+                    {showStats && (
+                      <div style={styles.statsCard}>
+                        <div style={styles.statRow}><span>Accuracy</span><span>{correctRef.current > 0 ? Math.round((correctRef.current / totalAnsweredRef.current) * 100) : 0}%</span></div>
+                        <div style={styles.statRow}><span>Problems Solved</span><span>{myFinalScore}</span></div>
+                        <div style={styles.statRow}><span>Best Streak</span><span>{bestStreakRef.current}×</span></div>
+                        <div style={styles.statRow}><span>Fastest Answer</span><span>{fastestRef.current < Infinity ? (fastestRef.current / 1000).toFixed(2) + 's' : 'N/A'}</span></div>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div style={{ color: '#ff6b6b' }}>Connection lost</div>
@@ -320,7 +353,13 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
 
         <div style={styles.divider} />
 
-        <div style={styles.panel}>
+        <div style={{
+          ...styles.panel,
+          opacity: isBlind ? 0.06 : 1,
+          transition: 'opacity 0.5s ease',
+          position: 'relative',
+        }}>
+          {isBlind && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff6b6b', fontSize: '1.5rem', fontWeight: 800, pointerEvents: 'none' }}>👁️‍🗨️</div>}
           <div style={styles.panelHeader}>
             Opponent <span style={styles.score}>{isHealth ? opponentState.hp : opponentState.score}</span>
           </div>
@@ -341,11 +380,8 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
         </div>
       </div>
 
-      {gameOver && isHost && (
+      {gameOver && (
         <button onClick={handleRestart} style={styles.restartBtn}>Play Again</button>
-      )}
-      {gameOver && !isHost && (
-        <p style={{ color: '#888', marginTop: '16px' }}>Waiting for host to restart...</p>
       )}
     </div>
   );
@@ -382,4 +418,8 @@ const styles = {
   progressFill: { height: '100%', background: '#4ecca3', borderRadius: '3px', transition: 'width 0.2s ease' },
   progressNum: { fontSize: '0.7rem', color: '#666', width: '48px', fontVariantNumeric: 'tabular-nums' },
   ghostCursor: { color: '#e94560', animation: 'blink 1s step-end infinite', fontWeight: 100 },
+  trophy: { fontSize: '5rem', animation: 'heartbeat 0.6s ease-in-out 3' },
+  statsToggle: { background: '#333', color: '#eee', fontSize: '0.85rem', padding: '6px 16px', marginBottom: '8px' },
+  statsCard: { background: '#16213e', borderRadius: '8px', padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '220px' },
+  statRow: { display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', color: '#ccc', gap: '24px' },
 };
