@@ -41,6 +41,27 @@ function lobbyState(game) {
   };
 }
 
+function killGame(game, reason) {
+  // Cancel all timers
+  for (const slot of [1, 2]) {
+    if (game.players[slot]._graceTimer) {
+      clearTimeout(game.players[slot]._graceTimer);
+      game.players[slot]._graceTimer = null;
+    }
+  }
+  if (game._cleanupTimer) clearTimeout(game._cleanupTimer);
+
+  // Notify remaining player(s)
+  for (const slot of [1, 2]) {
+    if (game.players[slot].id) {
+      io.to(game.players[slot].id).emit('host-left', { message: reason || 'Host left the game.' });
+    }
+  }
+
+  games.delete(game.id);
+  console.log(`[kill] ${game.id} — ${reason}`);
+}
+
 function findGameForSocket(socketId) {
   for (const game of games.values()) {
     if (game.players[1].id === socketId || game.players[2].id === socketId) {
@@ -230,7 +251,14 @@ io.on('connection', (socket) => {
     if (!game) return;
     const pn = getPlayerNum(game, socket.id);
     if (!pn) return;
-    // Leave the room and free the slot
+
+    // If host leaves, kill the whole game
+    if (pn === 1) {
+      killGame(game, 'Host left the game');
+      return;
+    }
+
+    // Non-host: leave the room and free the slot
     socket.leave(game.id);
     game.players[pn].id = null;
     game.players[pn].connected = false;
@@ -254,6 +282,12 @@ io.on('connection', (socket) => {
     if (!game) return;
     const pn = getPlayerNum(game, socket.id);
     if (!pn) return;
+
+    // If host disconnects, kill the whole game immediately
+    if (pn === 1) {
+      killGame(game, 'Host disconnected');
+      return;
+    }
 
     game.players[pn].connected = false;
 

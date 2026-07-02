@@ -14,6 +14,7 @@ export default function App() {
   const [gameData, setGameData] = useState(null);
   const [error, setError] = useState(null);
   const [dc, setDc] = useState(null);
+  const [hostLeft, setHostLeft] = useState(false);
   const [lastWinner, setLastWinner] = useState(null); // { playerNum, streak }
   const dcRef = useRef(null);
   const pcRef = useRef(null);
@@ -55,6 +56,9 @@ export default function App() {
     socket.on('peer-joined', async () => {
       if (!isHostRef.current) return;
       try {
+        // Close any previous connections before creating new ones
+        if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
+        if (dcRef.current) { dcRef.current.close(); dcRef.current = null; }
         const { pc, dc: dataChannel } = await hostConnect(socket);
         pcRef.current = pc;
         dcRef.current = dataChannel;
@@ -114,6 +118,11 @@ export default function App() {
       setDc(null);
     });
 
+    socket.on('host-left', ({ message }) => {
+      setHostLeft(true);
+      setError(message);
+    });
+
     socket.on('opponent-left', () => {});
 
     return () => {
@@ -121,6 +130,7 @@ export default function App() {
       socket.off('joined');
       socket.off('error');
       socket.off('lobby-closed');
+      socket.off('host-left');
       socket.off('opponent-left');
       if (dcRef.current) {
         dcRef.current.close();
@@ -175,6 +185,26 @@ export default function App() {
     setGameData(data);
     setScreen('game');
   }, []);
+
+  if (hostLeft) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', gap: '20px' }}>
+        <div style={{ fontSize: '3rem' }}>👋</div>
+        <h1 style={{ color: '#e94560', fontSize: '1.8rem', fontWeight: 800 }}>Host Left</h1>
+        <p style={{ color: '#888', fontSize: '1.1rem' }}>{error || 'The host disconnected. The game has ended.'}</p>
+        <button onClick={() => {
+          setHostLeft(false);
+          setError(null);
+          setScreen('menu');
+          setGameData(null);
+          setGameId(null);
+          window.history.pushState({}, '', '/');
+        }} style={{ padding: '12px 36px', fontSize: '1.1rem' }}>
+          Back to Menu
+        </button>
+      </div>
+    );
+  }
 
   if (screen === 'game' && dc && gameData) {
     return (

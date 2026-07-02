@@ -138,6 +138,8 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
               send(dc, { type: 'game-over', scores: { [pNum]: scoreRef.current, [oNum]: oppScoreRef.current }, hp: finalHpMsg });
               setScores({ [pNum]: scoreRef.current, [oNum]: oppScoreRef.current });
               setFinalHp(finalHpMsg);
+              if (socket) socket.emit('game-ended');
+              if (onGameEndRef.current) onGameEndRef.current({ [pNum]: scoreRef.current, [oNum]: oppScoreRef.current });
             }
 
             // Non-host also shows game-over when own HP reaches 0
@@ -271,6 +273,8 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
               send(dc, { type: 'game-over', scores: finalScores, hp: finalHpMsg });
               setScores(finalScores);
               setFinalHp(finalHpMsg);
+              if (socket) socket.emit('game-ended');
+              if (onGameEndRef.current) onGameEndRef.current(finalScores);
             } else {
               // Non-host: send player-update so host detects defeat
               emitUpdate(newIndex, '', newScore, hpRef.current, newOppHp);
