@@ -40,14 +40,12 @@ export default function Game({ dc, problems, startTime, duration, playerNum, isH
         // Send game-over to joiner
         const myScoreFinal = scoreRef.current;
         const oppScoreFinal = oppScoreRef.current;
-        send(dc, {
-          type: 'game-over',
-          scores: { 1: isHost ? myScoreFinal : oppScoreFinal, 2: isHost ? oppScoreFinal : myScoreFinal },
-        });
-        // End locally too
+        // Host is player 1, joiner is player 2
+        const finalScores = { 1: myScoreFinal, 2: oppScoreFinal };
+        send(dc, { type: 'game-over', scores: finalScores });
         gameOverRef.current = true;
         setGameOver(true);
-        setScores({ 1: isHost ? myScoreFinal : oppScoreFinal, 2: isHost ? oppScoreFinal : myScoreFinal });
+        setScores(finalScores);
       }
     };
 

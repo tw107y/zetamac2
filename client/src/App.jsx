@@ -95,7 +95,13 @@ export default function App() {
   const handleCreateGame = useCallback(() => {
     setError(null);
     setDcReady(false);
-    dcRef.current = null;
+    // Close any existing data channel
+    if (dcRef.current) {
+      dcRef.current.close();
+      dcRef.current = null;
+    }
+    // Leave old game room before creating new one
+    socket.emit('leave-game');
     socket.emit('create-game');
   }, []);
 

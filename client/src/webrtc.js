@@ -1,7 +1,6 @@
 /**
  * WebRTC peer connection helpers.
  * Uses Google's free STUN server for NAT traversal.
- * No library needed — RTCPeerConnection is built into browsers.
  *
  * Flow:
  *   Host:  peer-joined → hostConnect() → create offer → send SDP → wait answer → done
@@ -21,21 +20,28 @@ export function hostConnect(socket) {
   return new Promise((resolve, reject) => {
     const pc = new RTCPeerConnection(STUN_SERVERS);
     const dc = pc.createDataChannel('game');
+    let settled = false;
+
+    function done(err, result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.off('signal', onSignal);
+      if (err) reject(err);
+      else resolve(result);
+    }
 
     const timeout = setTimeout(() => {
       pc.close();
-      reject(new Error('WebRTC connection timed out.'));
+      done(new Error('WebRTC connection timed out.'));
     }, 30000);
 
-    dc.onopen = () => {
-      clearTimeout(timeout);
-      resolve({ pc, dc });
-    };
+    dc.onopen = () => done(null, { pc, dc });
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-        clearTimeout(timeout);
-        reject(new Error(
+        pc.close();
+        done(new Error(
           'Connection failed. This usually happens with phone hotspots or corporate networks. Try connecting from a home WiFi network.'
         ));
       }
@@ -43,7 +49,7 @@ export function hostConnect(socket) {
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        socket.emit('signal', e.candidate); // relay raw ICE candidate
+        socket.emit('signal', e.candidate);
       }
     };
 
@@ -51,26 +57,25 @@ export function hostConnect(socket) {
     pc.createOffer()
       .then((offer) => pc.setLocalDescription(offer))
       .then(() => {
-        // Send the offer SDP to the joiner via the server
         socket.emit('signal', { type: 'offer', sdp: pc.localDescription });
       })
-      .catch((err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
+      .catch((err) => done(err));
 
-    // Listen for answer and ICE candidates from joiner
-    socket.on('signal', async (data) => {
-      try {
-        if (data.type === 'answer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        } else if (data.candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(data));
+    // Signal handler — cleaned up by done()
+    function onSignal(data) {
+      (async () => {
+        try {
+          if (data.type === 'answer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          } else if (data.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(data));
+          }
+        } catch (err) {
+          console.warn('WebRTC signal error (host):', err);
         }
-      } catch (err) {
-        console.warn('WebRTC signal error (host):', err);
-      }
-    });
+      })();
+    }
+    socket.on('signal', onSignal);
   });
 }
 
@@ -82,24 +87,31 @@ export function hostConnect(socket) {
 export function joinerConnect(socket) {
   return new Promise((resolve, reject) => {
     const pc = new RTCPeerConnection(STUN_SERVERS);
+    let settled = false;
+
+    function done(err, result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.off('signal', onSignal);
+      if (err) reject(err);
+      else resolve(result);
+    }
 
     const timeout = setTimeout(() => {
       pc.close();
-      reject(new Error('WebRTC connection timed out.'));
+      done(new Error('WebRTC connection timed out.'));
     }, 30000);
 
     pc.ondatachannel = (e) => {
       const dc = e.channel;
-      dc.onopen = () => {
-        clearTimeout(timeout);
-        resolve({ pc, dc });
-      };
+      dc.onopen = () => done(null, { pc, dc });
     };
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-        clearTimeout(timeout);
-        reject(new Error(
+        pc.close();
+        done(new Error(
           'Connection failed. This usually happens with phone hotspots or corporate networks. Try connecting from a home WiFi network.'
         ));
       }
@@ -107,18 +119,17 @@ export function joinerConnect(socket) {
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        socket.emit('signal', e.candidate); // relay raw ICE candidate
+        socket.emit('signal', e.candidate);
       }
     };
 
-    // Listen for offer and ICE candidates from host
-    socket.on('signal', async (data) => {
+    // Signal handler — cleaned up by done()
+    async function onSignal(data) {
       try {
         if (data.type === 'offer') {
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          // Send the answer SDP back to the host
           socket.emit('signal', { type: 'answer', sdp: pc.localDescription });
         } else if (data.candidate) {
           await pc.addIceCandidate(new RTCIceCandidate(data));
@@ -126,6 +137,7 @@ export function joinerConnect(socket) {
       } catch (err) {
         console.warn('WebRTC signal error (joiner):', err);
       }
-    });
+    }
+    socket.on('signal', onSignal);
   });
 }
