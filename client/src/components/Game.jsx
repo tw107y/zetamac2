@@ -233,11 +233,35 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
     <div style={styles.wrapper} onClick={handleContainerClick}>
       <div style={styles.topBar}>
         <span style={styles.modeLabel}>{modeLabel}</span>
-        <span style={{ ...styles.timer, color: timeLeft <= 10 ? '#ff6b6b' : '#eee' }}>
+        <span style={{
+          ...styles.timer,
+          color: timeLeft <= 10 ? '#ff6b6b' : '#eee',
+          animation: timeLeft <= 10 ? `heartbeat ${timeLeft <= 5 ? '0.4s' : '0.7s'} ease-in-out infinite` : 'none',
+        }}>
           {timeLeft}s
         </span>
         {streak >= 3 && (
           <span style={styles.streakBadge}>{streak}× STREAK!</span>
+        )}
+      </div>
+
+      {/* Progress bars */}
+      <div style={styles.progressBars}>
+        <div style={styles.progressRow}>
+          <span style={styles.progressLabel}>You</span>
+          <div style={styles.progressTrack}>
+            <div style={{ ...styles.progressFill, width: `${(myProblemIndex / problems.length) * 100}%` }} />
+          </div>
+          <span style={styles.progressNum}>{myProblemIndex}/{problems.length}</span>
+        </div>
+        {!isDuel && (
+          <div style={styles.progressRow}>
+            <span style={styles.progressLabel}>Opp</span>
+            <div style={styles.progressTrack}>
+              <div style={{ ...styles.progressFill, width: `${(opponentState.problemIndex / problems.length) * 100}%`, background: '#e94560' }} />
+            </div>
+            <span style={styles.progressNum}>{opponentState.problemIndex}/{problems.length}</span>
+          </div>
         )}
       </div>
 
@@ -309,7 +333,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
                     : `${problems[opponentState.problemIndex]?.a} ${problems[opponentState.problemIndex]?.op} ${problems[opponentState.problemIndex]?.b} = ___`}
                 </div>
                 <div style={styles.opponentInput}>
-                  {opponentState.input || ' '}
+                  {opponentState.input || ' '}<span style={styles.ghostCursor}>|</span>
                 </div>
               </>
             )}
@@ -351,4 +375,11 @@ const styles = {
   divider: { width: '2px', background: '#333', alignSelf: 'stretch' },
   gameOverText: { textAlign: 'center', fontSize: '1.2rem' },
   restartBtn: { marginTop: '16px', fontSize: '1.1rem', padding: '12px 36px' },
+  progressBars: { width: '100%', maxWidth: '600px', display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '4px' },
+  progressRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+  progressLabel: { fontSize: '0.75rem', color: '#666', width: '28px', textAlign: 'right' },
+  progressTrack: { flex: 1, height: '6px', background: '#1a1a2e', borderRadius: '3px', overflow: 'hidden' },
+  progressFill: { height: '100%', background: '#4ecca3', borderRadius: '3px', transition: 'width 0.2s ease' },
+  progressNum: { fontSize: '0.7rem', color: '#666', width: '48px', fontVariantNumeric: 'tabular-nums' },
+  ghostCursor: { color: '#e94560', animation: 'blink 1s step-end infinite', fontWeight: 100 },
 };
