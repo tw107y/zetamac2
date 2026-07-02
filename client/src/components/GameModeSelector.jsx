@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 const GAME_MODES = [
   {
@@ -35,20 +35,44 @@ export default function GameModeSelector({ onCreateGame, error }) {
   const [selectedId, setSelectedId] = useState(null);
   const [panelClosing, setPanelClosing] = useState(false);
 
+  const selectedIdRef = useRef(selectedId);
+  const transitionTimerRef = useRef(null);
+
+  // Keep the ref in sync with state
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  // Cleanup transition timer on unmount
+  useEffect(() => {
+    return () => {
+      if (transitionTimerRef.current) {
+        clearTimeout(transitionTimerRef.current);
+      }
+    };
+  }, []);
+
   const selectedMode = GAME_MODES.find((m) => m.id === selectedId);
 
   const handleSelect = useCallback((modeId) => {
-    if (selectedId === modeId) {
+    // Clear any pending transition to prevent overlapping timeouts
+    if (transitionTimerRef.current) {
+      clearTimeout(transitionTimerRef.current);
+    }
+
+    const currentId = selectedIdRef.current;
+
+    if (currentId === modeId) {
       // Deselect — animate panel out first
       setPanelClosing(true);
-      setTimeout(() => {
+      transitionTimerRef.current = setTimeout(() => {
         setSelectedId(null);
         setPanelClosing(false);
       }, 250);
-    } else if (selectedId && selectedId !== modeId) {
+    } else if (currentId && currentId !== modeId) {
       // Switching modes — quick transition
       setPanelClosing(true);
-      setTimeout(() => {
+      transitionTimerRef.current = setTimeout(() => {
         setSelectedId(modeId);
         setPanelClosing(false);
       }, 150);
@@ -56,7 +80,7 @@ export default function GameModeSelector({ onCreateGame, error }) {
       // First selection
       setSelectedId(modeId);
     }
-  }, [selectedId]);
+  }, []); // No dependency on selectedId — reads from ref
 
   const handleCreate = useCallback(() => {
     if (selectedMode) {
@@ -101,6 +125,7 @@ export default function GameModeSelector({ onCreateGame, error }) {
         style={{
           ...styles.detailPanel,
           transform: panelVisible ? 'translateX(0)' : 'translateX(110%)',
+          pointerEvents: panelVisible ? 'auto' : 'none',
         }}
       >
         {selectedMode && (

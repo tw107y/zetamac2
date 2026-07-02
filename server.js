@@ -18,9 +18,10 @@ function createGame(id, mode) {
   return {
     id,
     mode: mode || 'classic',
+    state: 'lobby', // 'lobby' | 'playing' | 'finished'
     players: {
-      1: { id: null, connected: false },
-      2: { id: null, connected: false },
+      1: { id: null, connected: false, reservedFor: null },
+      2: { id: null, connected: false, reservedFor: null },
     },
     createdAt: Date.now(),
     lastActivity: Date.now(),
@@ -55,7 +56,10 @@ io.on('connection', (socket) => {
 
   // Create a new game lobby
   socket.on('create-game', (data = {}) => {
-    const gameId = crypto.randomUUID().slice(0, 6);
+    let gameId;
+    do {
+      gameId = crypto.randomUUID().slice(0, 6);
+    } while (games.has(gameId));
     const mode = data.mode || 'classic';
     const game = createGame(gameId, mode);
     game.players[1] = { id: socket.id, connected: true };
@@ -75,21 +79,60 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Reconnect check
+    // Check if this socket was previously in this game (same socket ID)
     const existingNum = getPlayerNum(game, socket.id);
     if (existingNum) {
+      // Same socket reconnecting (Socket.IO reconnect)
       game.players[existingNum].connected = true;
       game.lastActivity = Date.now();
       socket.join(gameId);
-      socket.emit('joined', { playerNum: existingNum, gameId, isHost: existingNum === 1 });
+      socket.emit('joined', { playerNum: existingNum, gameId, isHost: existingNum === 1, mode: game.mode });
       io.to(gameId).emit('lobby-update', lobbyState(game));
+      const otherPn = existingNum === 1 ? 2 : 1;
+      if (game.players[otherPn].id && game.players[otherPn].connected) {
+        io.to(game.players[otherPn].id).emit('peer-joined');
+      }
       return;
     }
 
-    // Find empty slot
+    // Game is in progress — only the original players can reconnect
+    if (game.state === 'playing') {
+      // Check if this player was reserved for either slot
+      let reservedSlot = null;
+      for (const slot of [1, 2]) {
+        if (game.players[slot].reservedFor) {
+          // Allow if the URL contains a token that matches? For now, check
+          // if the slot's old ID was recently disconnected (reservedFor is set)
+          // Since we can't verify identity, allow if a slot is reserved
+          // and the player knows the gameId URL
+          reservedSlot = slot;
+          break;
+        }
+      }
+      if (!reservedSlot) {
+        socket.emit('error', { message: 'Game in progress. Wait for it to finish.' });
+        return;
+      }
+      // Fill the reserved slot with this new socket
+      game.players[reservedSlot].id = socket.id;
+      game.players[reservedSlot].connected = true;
+      game.players[reservedSlot].reservedFor = null;
+      game.lastActivity = Date.now();
+      socket.join(gameId);
+      socket.emit('joined', { playerNum: reservedSlot, gameId, isHost: reservedSlot === 1, mode: game.mode });
+      io.to(gameId).emit('lobby-update', lobbyState(game));
+      const otherPn = reservedSlot === 1 ? 2 : 1;
+      if (game.players[otherPn].id && game.players[otherPn].connected) {
+        io.to(game.players[otherPn].id).emit('peer-joined');
+      }
+      console.log(`[game] ${socket.id} reconnected to ${gameId} as player ${reservedSlot} (in-game)`);
+      return;
+    }
+
+    // Lobby state — find any free (non-reserved) slot
     let assigned = null;
     for (const slot of [1, 2]) {
-      if (!game.players[slot].id) {
+      if (!game.players[slot].id && !game.players[slot].reservedFor) {
         assigned = slot;
         break;
       }
@@ -100,23 +143,37 @@ io.on('connection', (socket) => {
       return;
     }
 
-    game.players[assigned] = { id: socket.id, connected: true };
+    game.players[assigned] = { id: socket.id, connected: true, reservedFor: null };
     game.lastActivity = Date.now();
     socket.join(gameId);
-    socket.emit('joined', { playerNum: assigned, gameId, isHost: false, mode: game.mode });
+    socket.emit('joined', { playerNum: assigned, gameId, isHost: assigned === 1, mode: game.mode });
     io.to(gameId).emit('lobby-update', lobbyState(game));
 
-    // Tell host to initiate WebRTC
-    const hostSocketId = game.players[1].id;
-    if (hostSocketId && assigned !== 1) {
-      io.to(hostSocketId).emit('peer-joined');
+    // If both players connected, tell each about the other
+    const p1Id = game.players[1].id;
+    const p2Id = game.players[2].id;
+    if (p1Id && p2Id) {
+      io.to(p1Id).emit('peer-joined');
+      io.to(p2Id).emit('peer-joined');
     }
 
     console.log(`[lobby] ${socket.id} joined ${gameId} as player ${assigned}`);
   });
 
-  // WebRTC signaling relay
+  // WebRTC signaling relay (rate-limited)
+  const signalTimestamps = [];
   socket.on('signal', (data) => {
+    const now = Date.now();
+    // Prune timestamps older than 1 second
+    while (signalTimestamps.length && signalTimestamps[0] < now - 1000) {
+      signalTimestamps.shift();
+    }
+    if (signalTimestamps.length >= 20) {
+      console.warn(`[signal] rate limit exceeded for ${socket.id}`);
+      return;
+    }
+    signalTimestamps.push(now);
+
     const game = findGameForSocket(socket.id);
     if (!game) return;
     const pn = getPlayerNum(game, socket.id);
@@ -128,6 +185,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Host notifies server that game has started
+  socket.on('game-started', () => {
+    const game = findGameForSocket(socket.id);
+    if (!game) return;
+    game.state = 'playing';
+    game.lastActivity = Date.now();
+    console.log(`[game] ${game.id} started (state=playing)`);
+  });
+
+  // Host notifies server that game has ended
+  socket.on('game-ended', () => {
+    const game = findGameForSocket(socket.id);
+    if (!game) return;
+    game.state = 'lobby';
+    game.lastActivity = Date.now();
+    // Free any reserved slots now that game is over
+    for (const slot of [1, 2]) {
+      if (game.players[slot]._graceTimer) {
+        clearTimeout(game.players[slot]._graceTimer);
+      }
+      game.players[slot].reservedFor = null;
+      if (!game.players[slot].connected) {
+        game.players[slot].id = null;
+      }
+    }
+    console.log(`[game] ${game.id} ended (state=lobby)`);
+  });
+
   // Disconnect
   socket.on('disconnect', () => {
     console.log(`[disconnect] ${socket.id}`);
@@ -136,7 +221,6 @@ io.on('connection', (socket) => {
     const pn = getPlayerNum(game, socket.id);
     if (!pn) return;
 
-    game.players[pn].id = null;
     game.players[pn].connected = false;
 
     const otherPn = pn === 1 ? 2 : 1;
@@ -146,14 +230,31 @@ io.on('connection', (socket) => {
       io.to(otherId).emit('lobby-update', lobbyState(game));
     }
 
-    // If both gone, clean up after 15s
-    if (!game.players[1].id && !game.players[2].id) {
-      setTimeout(() => {
+    if (game.state === 'lobby') {
+      // Pre-game: free the slot immediately so anyone can join
+      game.players[pn].id = null;
+      game.players[pn].reservedFor = null;
+      console.log(`[lobby] freed slot ${pn} in ${game.id} (pre-game disconnect)`);
+    } else {
+      // In-game: reserve the slot for 15s for this player to reconnect
+      game.players[pn].reservedFor = pn;
+      const slot = pn;
+      if (game.players[slot]._graceTimer) clearTimeout(game.players[slot]._graceTimer);
+      game.players[slot]._graceTimer = setTimeout(() => {
+        game.players[slot].id = null;
+        game.players[slot].reservedFor = null;
+        // If both gone, clean up
         if (!game.players[1].id && !game.players[2].id) {
-          games.delete(game.id);
-          console.log(`[cleanup] deleted ${game.id} — both players left`);
+          if (game._cleanupTimer) clearTimeout(game._cleanupTimer);
+          game._cleanupTimer = setTimeout(() => {
+            if (!game.players[1].id && !game.players[2].id) {
+              games.delete(game.id);
+              console.log(`[cleanup] deleted ${game.id} — both players left`);
+            }
+          }, 1000);
         }
       }, 15000);
+      console.log(`[game] reserved slot ${slot} in ${game.id} for 15s (in-game disconnect)`);
     }
   });
 });

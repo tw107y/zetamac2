@@ -38,6 +38,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
   const readyRef = useRef(false);
   const opponentReadyRef = useRef(false);
   const countdownRef = useRef(null);
+  const gameStartedRef = useRef(false);
   const gameDuration = 60;
 
   // When data channel opens, send initial ready state so opponent knows we're here
@@ -45,6 +46,16 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
     if (!dc) return;
     send(dc, { type: 'ready-change', ready: false });
   }, [dc]);
+
+  // ── Cleanup countdown interval on unmount ────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
+    };
+  }, []);
 
   // ── SINGLE message handler: both host and joiner use the same logic ──
   useEffect(() => {
@@ -66,11 +77,16 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
 
         case 'countdown':
           setCountdown(msg.num);
+          if (!isHost) playCountdown(msg.num);
           break;
 
         case 'game-start':
           setCountdown(null);
-          onGameStart(msg);
+          if (!isHost) playGameStart();
+          if (!gameStartedRef.current) {
+            gameStartedRef.current = true;
+            onGameStart(msg);
+          }
           break;
 
         case 'restart':
@@ -79,6 +95,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
           setOpponentReady(false);
           opponentReadyRef.current = false;
           setCountdown(null);
+          gameStartedRef.current = false;
           break;
 
         case 'back-to-lobby':
@@ -87,6 +104,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
           setOpponentReady(false);
           opponentReadyRef.current = false;
           setCountdown(null);
+          gameStartedRef.current = false;
           break;
       }
     }
@@ -97,10 +115,11 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
 
   // ── Socket: opponent-left ───────────────────────────────────────────
   useEffect(() => {
-    socket.on('opponent-left', () => {
+    const handler = () => {
       // opponent-connected state is implicit: dc is open = connected
-    });
-    return () => socket.off('opponent-left');
+    };
+    socket.on('opponent-left', handler);
+    return () => socket.off('opponent-left', handler);
   }, [socket]);
 
   // ── User actions ────────────────────────────────────────────────────
@@ -124,6 +143,7 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
 
   // ── Countdown (host only) ───────────────────────────────────────────
   function startCountdown() {
+    if (countdownRef.current) return;
     let count = 3;
     playCountdown(count);
     send(dc, { type: 'countdown', num: count });
@@ -139,12 +159,16 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
         playGameStart();
         clearInterval(countdownRef.current);
         countdownRef.current = null;
-        const problems = generateProblems(120);
-        const startTime = Date.now();
-        const data = { type: 'game-start', problems, startTime, duration: gameDuration, mode };
-        send(dc, data);
-        setCountdown(null);
-        onGameStart(data);
+        if (!gameStartedRef.current) {
+          gameStartedRef.current = true;
+          if (isHost) socket.emit('game-started');
+          const problems = generateProblems(120);
+          const startTime = Date.now();
+          const data = { type: 'game-start', problems, startTime, duration: gameDuration, mode };
+          send(dc, data);
+          setCountdown(null);
+          onGameStart(data);
+        }
       }
     }, 1000);
   }

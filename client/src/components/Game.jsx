@@ -7,7 +7,7 @@ function send(dc, msg) {
   }
 }
 
-export default function Game({ dc, mode, problems, startTime, duration, playerNum, isHost, onBackToLobby, onGameEnd }) {
+export default function Game({ dc, mode, problems, startTime, duration, playerNum, isHost, socket, onBackToLobby, onGameEnd }) {
   const [timeLeft, setTimeLeft] = useState(duration);
   const [myProblemIndex, setMyProblemIndex] = useState(0);
   const [myInput, setMyInput] = useState('');
@@ -16,6 +16,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
   const [opponentState, setOpponentState] = useState({ problemIndex: 0, input: '', score: 0, hp: 100 });
   const [gameOver, setGameOver] = useState(false);
   const [scores, setScores] = useState(null);
+  const [finalHp, setFinalHp] = useState(null);
   const [streak, setStreak] = useState(0);
   const [lastAnswerTime, setLastAnswerTime] = useState(0);
 
@@ -34,7 +35,16 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
   const correctRef = useRef(0);
   const bestStreakRef = useRef(0);
   const fastestRef = useRef(Infinity);
+  const problemStartTimeRef = useRef(Date.now());
+  const graceTimeoutRef = useRef(null);
+  const playerNumRef = useRef(playerNum);
+  const onGameEndRef = useRef(onGameEnd);
+  const onBackToLobbyRef = useRef(onBackToLobby);
   const [showStats, setShowStats] = useState(false);
+
+  useEffect(() => { playerNumRef.current = playerNum; }, [playerNum]);
+  useEffect(() => { onGameEndRef.current = onGameEnd; }, [onGameEnd]);
+  useEffect(() => { onBackToLobbyRef.current = onBackToLobby; }, [onBackToLobby]);
 
   const isHealth = mode === 'health';
   const isDuel = mode === 'duel';
@@ -54,17 +64,24 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
         gameOverRef.current = true;
         setGameOver(true);
 
-        setTimeout(() => {
-          const finalScores = { 1: scoreRef.current, 2: oppScoreRef.current };
-          send(dc, { type: 'game-over', scores: finalScores, hp: { 1: hpRef.current, 2: oppHpRef.current } });
+        graceTimeoutRef.current = setTimeout(() => {
+          const opponentNum = playerNumRef.current === 1 ? 2 : 1;
+          const finalScores = { [playerNumRef.current]: scoreRef.current, [opponentNum]: oppScoreRef.current };
+          const finalHpMsg = isHealth ? { [playerNumRef.current]: hpRef.current, [opponentNum]: oppHpRef.current } : undefined;
+          send(dc, { type: 'game-over', scores: finalScores, hp: finalHpMsg });
           setScores(finalScores);
+          if (finalHpMsg) setFinalHp(finalHpMsg);
+          if (socket) socket.emit('game-ended');
         }, 500);
       }
     };
 
     tick();
     const interval = setInterval(tick, 100);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(graceTimeoutRef.current);
+    };
   }, [isHost, startTime, duration, dc]);
 
   // ── Joiner timer ────────────────────────────────────────────────────
@@ -78,7 +95,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
 
       if (remaining <= 0 && !gracePeriodRef.current) {
         gracePeriodRef.current = true;
-        lastEmitRef.current = 0;
+        gameOverRef.current = true;
         send(dc, { type: 'player-update', problemIndex: problemIndexRef.current, input: inputRef2.current, score: scoreRef.current, hp: hpRef.current });
       }
     };
@@ -103,6 +120,31 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
           });
           oppScoreRef.current = msg.score;
           oppHpRef.current = msg.hp ?? oppHpRef.current;
+
+          // Health mode: track own HP from opponent's attack
+          if (isHealth && msg.targetHp !== undefined) {
+            hpRef.current = msg.targetHp;
+            setMyHp(msg.targetHp);
+
+            // Host detects defeat when own HP reaches 0
+            if (isHost && msg.targetHp <= 0 && !gameOverRef.current) {
+              gracePeriodRef.current = true;
+              gameOverRef.current = true;
+              setGameOver(true);
+              const pNum = playerNumRef.current;
+              const oNum = pNum === 1 ? 2 : 1;
+              const finalHpMsg = { [pNum]: msg.targetHp, [oNum]: oppHpRef.current };
+              send(dc, { type: 'game-over', scores: { [pNum]: scoreRef.current, [oNum]: oppScoreRef.current }, hp: finalHpMsg });
+              setScores({ [pNum]: scoreRef.current, [oNum]: oppScoreRef.current });
+              setFinalHp(finalHpMsg);
+            }
+
+            // Non-host also shows game-over when own HP reaches 0
+            if (msg.targetHp <= 0 && !isHost && !gameOverRef.current) {
+              gameOverRef.current = true;
+              setGameOver(true);
+            }
+          }
           break;
 
         case 'duel-claim':
@@ -111,6 +153,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
             setMyProblemIndex(msg.problemIndex + 1);
             setMyInput('');
             inputRef2.current = '';
+            problemStartTimeRef.current = Date.now();
           }
           oppScoreRef.current = msg.score;
           setOpponentState(prev => ({ ...prev, problemIndex: msg.problemIndex + 1, score: msg.score }));
@@ -120,21 +163,43 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
           gameOverRef.current = true;
           setGameOver(true);
           setScores(msg.scores);
-          if (onGameEnd) onGameEnd(msg.scores);
+          if (msg.hp) setFinalHp(msg.hp);
+          if (onGameEndRef.current) onGameEndRef.current(msg.scores);
           if (msg.scores) {
-            const won = msg.scores[playerNum] > msg.scores[playerNum === 1 ? 2 : 1];
-            if (won) playWin(); else playLose();
+            const pNum = playerNumRef.current;
+            const oNum = pNum === 1 ? 2 : 1;
+            if (isHealth && msg.hp) {
+              const won = (msg.hp[pNum] ?? 0) > (msg.hp[oNum] ?? 0);
+              if (won) playWin(); else playLose();
+            } else {
+              const won = msg.scores[pNum] > msg.scores[oNum];
+              if (won) playWin(); else playLose();
+            }
           }
           break;
 
         case 'restart':
-          onBackToLobby();
+          if (onBackToLobbyRef.current) onBackToLobbyRef.current();
           break;
       }
     }
 
+    function handleDisconnect() {
+      if (!gameOverRef.current) {
+        gameOverRef.current = true;
+        setGameOver(true);
+        setScores(null);
+      }
+    }
+
     dc.addEventListener('message', handleMessage);
-    return () => dc.removeEventListener('message', handleMessage);
+    dc.addEventListener('close', handleDisconnect);
+    dc.addEventListener('error', handleDisconnect);
+    return () => {
+      dc.removeEventListener('message', handleMessage);
+      dc.removeEventListener('close', handleDisconnect);
+      dc.removeEventListener('error', handleDisconnect);
+    };
   }, [dc]);
 
   // ── Auto-focus ──────────────────────────────────────────────────────
@@ -143,11 +208,11 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
   }, [myProblemIndex, gameOver]);
 
   // ── Emit player state (throttled, non-duel modes) ───────────────────
-  const emitUpdate = useCallback((index, input, score, hp) => {
+  const emitUpdate = useCallback((index, input, score, hp, targetHp) => {
     const now = Date.now();
     if (now - lastEmitRef.current < 100) return;
     lastEmitRef.current = now;
-    send(dc, { type: 'player-update', problemIndex: index, input, score, hp });
+    send(dc, { type: 'player-update', problemIndex: index, input, score, hp, targetHp });
   }, [dc]);
 
   const currentProblem = problems[myProblemIndex];
@@ -167,7 +232,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
         const newIndex = myProblemIndex + 1;
         const now = Date.now();
         const timeSinceLast = now - lastAnswerTime;
-        const solveTime = now - lastEmitRef.current || 0;
+        const solveTime = now - problemStartTimeRef.current;
 
         // Stats
         totalAnsweredRef.current++;
@@ -186,6 +251,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
         scoreRef.current = newScore;
         problemIndexRef.current = newIndex;
         inputRef2.current = '';
+        problemStartTimeRef.current = now;
 
         if (isHealth) {
           // Deal 10 damage to opponent
@@ -193,22 +259,29 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
           oppHpRef.current = newOppHp;
           setOpponentState(prev => ({ ...prev, hp: newOppHp }));
           // Check if opponent is defeated
-          if (newOppHp <= 0 && isHost && !gameOverRef.current) {
+          if (newOppHp <= 0 && !gameOverRef.current) {
             gracePeriodRef.current = true;
             gameOverRef.current = true;
             setGameOver(true);
-            const finalScores = { 1: newScore, 2: oppScoreRef.current };
-            send(dc, { type: 'game-over', scores: finalScores, hp: { 1: hpRef.current, 2: newOppHp } });
-            setScores(finalScores);
+            if (isHost) {
+              const opponentNum = playerNum === 1 ? 2 : 1;
+              const finalScores = { [playerNum]: newScore, [opponentNum]: oppScoreRef.current };
+              const finalHpMsg = { [playerNum]: hpRef.current, [opponentNum]: newOppHp };
+              send(dc, { type: 'game-over', scores: finalScores, hp: finalHpMsg });
+              setScores(finalScores);
+              setFinalHp(finalHpMsg);
+            } else {
+              // Non-host: send player-update so host detects defeat
+              emitUpdate(newIndex, '', newScore, hpRef.current, newOppHp);
+            }
             return;
           }
         }
 
         if (isDuel) {
-          lastEmitRef.current = 0;
           send(dc, { type: 'duel-claim', problemIndex: myProblemIndex, score: newScore });
         } else {
-          emitUpdate(newIndex, '', newScore, hpRef.current);
+          emitUpdate(newIndex, '', newScore, hpRef.current, isHealth ? oppHpRef.current : undefined);
         }
         return;
       }
@@ -226,15 +299,18 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
       if (e.key === 'Enter' && currentProblem && parsed !== currentProblem.answer) {
         setMyInput('');
         setStreak(0);
+        totalAnsweredRef.current++;
       }
       if (e.key === 'Escape') {
         setMyInput('');
         setStreak(0);
+        totalAnsweredRef.current++;
       }
     }
   };
 
   const handleRestart = () => {
+    send(dc, { type: 'restart' });
     onBackToLobby();
   };
 
@@ -244,6 +320,8 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
 
   const opponentNum = playerNum === 1 ? 2 : 1;
   const myFinalScore = scores ? scores[playerNum] : myScore;
+  const displayMyScore = isHealth && finalHp ? (finalHp[playerNum] ?? myFinalScore) : myFinalScore;
+  const displayOppScore = isHealth && finalHp ? (finalHp[opponentNum] ?? (scores ? scores[opponentNum] : 0)) : (scores ? scores[opponentNum] : 0);
 
   // ── Render ──────────────────────────────────────────────────────────
   const modeLabel = isDuel ? '⚔️ Duel' : isHealth ? '❤️ Health' : '🧮 Classic';
@@ -321,15 +399,15 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
                 {scores ? (
                   <>
                     <div style={styles.trophy}>
-                      {myFinalScore > (scores[opponentNum] || 0) ? '🏆' : '🎮'}
+                      {displayMyScore > displayOppScore ? '🏆' : '🎮'}
                     </div>
                     <div style={{ fontSize: '1.8rem', fontWeight: 800, marginBottom: '4px' }}>
-                      {myFinalScore > (scores[opponentNum] || 0) ? 'You Won!'
-                        : myFinalScore < (scores[opponentNum] || 0) ? 'You Lost'
+                      {displayMyScore > displayOppScore ? 'You Won!'
+                        : displayMyScore < displayOppScore ? 'You Lost'
                         : "It's a Tie!"}
                     </div>
                     <div style={{ fontSize: '1rem', color: '#888', marginBottom: '12px' }}>
-                      Player {playerNum} {myFinalScore} – {scores[opponentNum]} Player {opponentNum}
+                      Player {playerNum} {displayMyScore}{isHealth ? ' HP' : ''} – {displayOppScore}{isHealth ? ' HP' : ''} Player {opponentNum}
                     </div>
                     <button onClick={() => setShowStats(!showStats)} style={styles.statsToggle}>
                       {showStats ? 'Hide Stats' : '📊 Stats'}

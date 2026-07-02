@@ -11,9 +11,29 @@ function getCtx() {
   return ctx;
 }
 
+// One-time AudioContext resume on first user interaction (bypasses autoplay policy)
+function initAudioOnInteraction() {
+  const handler = () => {
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume();
+    }
+    document.removeEventListener('click', handler);
+    document.removeEventListener('touchstart', handler);
+    document.removeEventListener('keydown', handler);
+  };
+  document.addEventListener('click', handler);
+  document.addEventListener('touchstart', handler);
+  document.addEventListener('keydown', handler);
+}
+initAudioOnInteraction();
+
 function playTone(freq, duration, type = 'sine', vol = 0.08) {
   try {
     const c = getCtx();
+    // Resume context if suspended (e.g., after tab loses focus)
+    if (c.state === 'suspended') {
+      c.resume();
+    }
     const osc = c.createOscillator();
     const gain = c.createGain();
     osc.type = type;

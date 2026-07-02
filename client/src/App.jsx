@@ -13,9 +13,11 @@ export default function App() {
   const [gameMode, setGameMode] = useState('classic');
   const [gameData, setGameData] = useState(null);
   const [error, setError] = useState(null);
-  const [dcReady, setDcReady] = useState(false);
+  const [dc, setDc] = useState(null);
   const [lastWinner, setLastWinner] = useState(null); // { playerNum, streak }
   const dcRef = useRef(null);
+  const pcRef = useRef(null);
+  const isHostRef = useRef(false);
 
   useEffect(() => {
     socket.connect();
@@ -32,6 +34,38 @@ export default function App() {
     }
   }, []);
 
+  // Handle browser back/forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname;
+      if (path === '/' || path.length <= 1) {
+        setScreen('menu');
+        setGameData(null);
+        setGameId(null);
+      } else {
+        setGameId(path.slice(1));
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Persistent peer-joined listener (registered once — never leaks)
+  useEffect(() => {
+    socket.on('peer-joined', async () => {
+      if (!isHostRef.current) return;
+      try {
+        const { pc, dc: dataChannel } = await hostConnect(socket);
+        pcRef.current = pc;
+        dcRef.current = dataChannel;
+        setDc(dataChannel);
+      } catch (err) {
+        setError(err.message);
+      }
+    });
+    return () => { socket.off('peer-joined'); };
+  }, []);
+
   // Socket event listeners (signaling only)
   useEffect(() => {
     socket.on('game-created', ({ gameId: id, mode }) => {
@@ -44,29 +78,22 @@ export default function App() {
       setPlayerNum(pn);
       setGameId(id);
       setIsHost(host);
+      isHostRef.current = host;
       setGameMode(mode || 'classic');
       setError(null);
 
-      if (host) {
-        setScreen('lobby');
-        socket.once('peer-joined', async () => {
-          try {
-            const { dc } = await hostConnect(socket);
-            dcRef.current = dc;
-            setDcReady(true);
-          } catch (err) {
-            setError(err.message);
-          }
-        });
-      } else {
+      if (!host) {
         try {
-          const { dc } = await joinerConnect(socket);
-          dcRef.current = dc;
-          setDcReady(true);
+          const { pc, dc: dataChannel } = await joinerConnect(socket);
+          pcRef.current = pc;
+          dcRef.current = dataChannel;
+          setDc(dataChannel);
           setScreen('lobby');
         } catch (err) {
           setError(err.message);
         }
+      } else {
+        setScreen('lobby');
       }
     });
 
@@ -76,6 +103,15 @@ export default function App() {
       setError(message);
       setScreen('menu');
       window.history.pushState({}, '', '/');
+      if (dcRef.current) {
+        dcRef.current.close();
+        dcRef.current = null;
+      }
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
+      setDc(null);
     });
 
     socket.on('opponent-left', () => {});
@@ -86,17 +122,29 @@ export default function App() {
       socket.off('error');
       socket.off('lobby-closed');
       socket.off('opponent-left');
+      if (dcRef.current) {
+        dcRef.current.close();
+        dcRef.current = null;
+      }
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
     };
   }, []);
 
   const handleCreateGame = useCallback((mode) => {
     setError(null);
     setGameMode(mode);
-    setDcReady(false);
     if (dcRef.current) {
       dcRef.current.close();
       dcRef.current = null;
     }
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+    setDc(null);
     socket.emit('leave-game');
     socket.emit('create-game', { mode });
   }, []);
@@ -122,7 +170,10 @@ export default function App() {
     }
   }, [playerNum]);
 
-  const dc = dcRef.current;
+  const handleGameStart = useCallback((data) => {
+    setGameData(data);
+    setScreen('game');
+  }, []);
 
   if (screen === 'game' && dc && gameData) {
     return (
@@ -134,6 +185,7 @@ export default function App() {
         duration={gameData.duration}
         playerNum={playerNum}
         isHost={isHost}
+        socket={socket}
         onBackToLobby={handleBackToLobby}
         onGameEnd={handleGameEnd}
       />
@@ -151,10 +203,7 @@ export default function App() {
         mode={gameMode}
         lastWinner={lastWinner}
         error={error}
-        onGameStart={(data) => {
-          setGameData(data);
-          setScreen('game');
-        }}
+        onGameStart={handleGameStart}
       />
     );
   }
