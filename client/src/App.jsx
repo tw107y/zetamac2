@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import socket from './socket';
 import { hostConnect, joinerConnect } from './webrtc';
+import { createBotDC } from './bot';
 import GameModeSelector from './components/GameModeSelector';
 import Lobby from './components/Lobby';
 import Game from './components/Game';
+import MinesweeperGame from './components/MinesweeperGame';
 
 export default function App() {
   const [screen, setScreen] = useState('menu');
@@ -16,6 +18,8 @@ export default function App() {
   const [dc, setDc] = useState(null);
   const [hostLeft, setHostLeft] = useState(false);
   const [lastWinner, setLastWinner] = useState(null); // { playerNum, streak }
+  const [vsBot, setVsBot] = useState(false);
+  const [botDifficulty, setBotDifficulty] = useState('medium');
   const dcRef = useRef(null);
   const pcRef = useRef(null);
   const isHostRef = useRef(false);
@@ -82,6 +86,7 @@ export default function App() {
     });
 
     socket.on('joined', async ({ playerNum: pn, gameId: id, isHost: host, mode }) => {
+      console.log(`[App] joined as player ${pn}, isHost=${host}`);
       setPlayerNum(pn);
       setGameId(id);
       setIsHost(host);
@@ -149,19 +154,50 @@ export default function App() {
     };
   }, []);
 
-  const handleCreateGame = useCallback((mode) => {
+  const handleCreateGame = useCallback((mode, vsBotParam = false, difficulty = 'medium') => {
     setError(null);
     setGameMode(mode);
     setLastWinner(null);
-    if (dcRef.current) {
-      dcRef.current.close();
-      dcRef.current = null;
-    }
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
+    if (dcRef.current) { dcRef.current.close(); dcRef.current = null; }
+    if (pcRef.current) { pcRef.current.close(); pcRef.current = null; }
     setDc(null);
+
+    if (vsBotParam) {
+      setVsBot(true);
+      setBotDifficulty(difficulty);
+      setPlayerNum(1);
+      setIsHost(true);
+      isHostRef.current = true;
+      const startTime = Date.now();
+      const gameDuration = 60;
+      let gameData;
+      if (mode === 'minesweeper') {
+        gameData = { type: 'game-start', startTime, duration: gameDuration, mode };
+      } else {
+        const ops = ['+', '-', '×', '÷'];
+        const problems = [];
+        for (let i = 0; i < 120; i++) {
+          const op = ops[Math.floor(Math.random() * 4)];
+          let a, b, answer;
+          switch (op) {
+            case '+': a = Math.floor(Math.random() * 99) + 2; b = Math.floor(Math.random() * 99) + 2; answer = a + b; break;
+            case '-': a = Math.floor(Math.random() * 99) + 2; b = Math.floor(Math.random() * a) + 1; answer = a - b; break;
+            case '×': a = Math.floor(Math.random() * 11) + 2; b = Math.floor(Math.random() * 99) + 2; answer = a * b; break;
+            case '÷': b = Math.floor(Math.random() * 11) + 2; answer = Math.floor(Math.random() * 99) + 2; a = answer * b; break;
+          }
+          problems.push({ a, b, op, answer });
+        }
+        gameData = { type: 'game-start', problems, startTime, duration: gameDuration, mode };
+      }
+      const botDc = createBotDC({ mode, difficulty, gameData, playerNum: 2 });
+      dcRef.current = botDc;
+      setDc(botDc);
+      setGameData(gameData);
+      setScreen('game');
+      return;
+    }
+
+    setVsBot(false);
     socket.emit('leave-game');
     socket.emit('create-game', { mode });
   }, []);
@@ -221,6 +257,22 @@ export default function App() {
           Back to Menu
         </button>
       </div>
+    );
+  }
+
+  if (screen === 'game' && dc && gameData && gameMode === 'minesweeper') {
+    return (
+      <MinesweeperGame
+        dc={dc}
+        mode={gameMode}
+        startTime={gameData.startTime}
+        duration={gameData.duration}
+        playerNum={playerNum}
+        isHost={isHost}
+        socket={socket}
+        onBackToLobby={handleBackToLobby}
+        onGameEnd={handleGameEnd}
+      />
     );
   }
 

@@ -41,7 +41,8 @@ export function hostConnect(socket) {
       done(new Error('WebRTC connection timed out.'));
     }, 30000);
 
-    dc.onopen = () => done(null, { pc, dc });
+    console.log('[WebRTC host] Setting up, creating offer...');
+    dc.onopen = () => { console.log('[WebRTC host] Data channel OPEN ✓'); done(null, { pc, dc }); };
     dc.onerror = (e) => console.error('Data channel error (host):', e);
     dc.onclose = () => {
       console.warn('Data channel closed (host)');
@@ -49,6 +50,7 @@ export function hostConnect(socket) {
     };
 
     pc.oniceconnectionstatechange = () => {
+      console.log('[WebRTC] ICE state:', pc.iceConnectionState);
       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
         pc.close();
         done(new Error(
@@ -67,6 +69,7 @@ export function hostConnect(socket) {
     pc.createOffer()
       .then((offer) => pc.setLocalDescription(offer))
       .then(() => {
+        console.log('[WebRTC host] Sending offer via signal relay...');
         socket.emit('signal', { type: 'offer', sdp: pc.localDescription });
       })
       .catch((err) => done(err));
@@ -76,6 +79,7 @@ export function hostConnect(socket) {
       (async () => {
         try {
           if (data.type === 'answer') {
+            console.log('[WebRTC host] Answer received from joiner');
             await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
             remoteDescriptionSet = true;
             // Process any ICE candidates queued before remote description was set
@@ -124,9 +128,10 @@ export function joinerConnect(socket) {
       done(new Error('WebRTC connection timed out.'));
     }, 30000);
 
+    console.log('[WebRTC joiner] Waiting for offer...');
     pc.ondatachannel = (e) => {
       const dc = e.channel;
-      dc.onopen = () => done(null, { pc, dc });
+      dc.onopen = () => { console.log('[WebRTC joiner] Data channel OPEN ✓'); done(null, { pc, dc }); };
       dc.onerror = (e) => console.error('Data channel error (joiner):', e);
       dc.onclose = () => {
         console.warn('Data channel closed (joiner)');
@@ -135,6 +140,7 @@ export function joinerConnect(socket) {
     };
 
     pc.oniceconnectionstatechange = () => {
+      console.log('[WebRTC] ICE state:', pc.iceConnectionState);
       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
         pc.close();
         done(new Error(
@@ -154,6 +160,7 @@ export function joinerConnect(socket) {
       (async () => {
         try {
           if (data.type === 'offer') {
+            console.log('[WebRTC joiner] Offer received, sending answer...');
             await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
             remoteDescriptionSet = true;
             // Process any ICE candidates queued before remote description was set

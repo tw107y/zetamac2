@@ -48,7 +48,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
 
   const isHealth = mode === 'health';
   const isDuel = mode === 'duel';
-  const isBlind = timeLeft <= 15 && timeLeft > 0;
+  const isBlind = !isDuel && timeLeft <= 15 && timeLeft > 0;
 
   // ── Host timer (authoritative) ──────────────────────────────────────
   useEffect(() => {
@@ -404,7 +404,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
                 {scores ? (
                   <>
                     <div style={styles.trophy}>
-                      {displayMyScore > displayOppScore ? '🏆' : '🎮'}
+                      {displayMyScore > displayOppScore ? '🏆' : '🤖'}
                     </div>
                     <div style={{ fontSize: '1.8rem', fontWeight: 800, marginBottom: '4px' }}>
                       {displayMyScore > displayOppScore ? 'You Won!'

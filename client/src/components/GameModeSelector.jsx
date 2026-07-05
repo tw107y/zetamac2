@@ -84,7 +84,7 @@ export default function GameModeSelector({ onCreateGame, error }) {
 
   const handleCreate = useCallback(() => {
     if (selectedMode) {
-      onCreateGame(selectedMode.id);
+      onCreateGame(selectedMode.id, false);
     }
   }, [selectedMode, onCreateGame]);
 
@@ -140,9 +140,17 @@ export default function GameModeSelector({ onCreateGame, error }) {
             <div style={styles.panelEmoji}>{selectedMode.emoji}</div>
             <h2 style={styles.panelTitle}>{selectedMode.title}</h2>
             <p style={styles.panelDesc}>{selectedMode.description}</p>
-            <button onClick={handleCreate} style={styles.createBtn}>
-              Create Game
+            <button onClick={() => onCreateGame(selectedMode.id, false)} style={styles.createBtn}>
+              Play vs Player
             </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', marginTop: '8px' }}>
+              <div style={{ color: '#888', fontSize: '0.85rem', textAlign: 'center' }}>— or play vs Bot —</div>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                <button onClick={() => onCreateGame(selectedMode.id, true, 'easy')} style={{...styles.createBtn, background: '#4ecca3', fontSize: '0.95rem', padding: '10px 20px'}}>Easy Bot</button>
+                <button onClick={() => onCreateGame(selectedMode.id, true, 'medium')} style={{...styles.createBtn, background: '#e9a820', fontSize: '0.95rem', padding: '10px 20px'}}>Medium Bot</button>
+                <button onClick={() => onCreateGame(selectedMode.id, true, 'hard')} style={{...styles.createBtn, background: '#e94560', fontSize: '0.95rem', padding: '10px 20px'}}>Hard Bot</button>
+              </div>
+            </div>
           </div>
         )}
       </div>
