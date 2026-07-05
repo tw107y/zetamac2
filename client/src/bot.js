@@ -1,202 +1,530 @@
 /**
- * Bot engine — simulates a human opponent for all game modes.
- * Creates a mock DataChannel that game components use identically to real WebRTC.
+ * Bot engine — creates a mock DataChannel simulating a human opponent.
+ * Supports all game modes (classic, duel, health, minesweeper)
+ * with three difficulty levels (easy, medium, hard).
  */
-function randBetween(min, max) { return Math.random() * (max - min) + min; }
-function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-function generateBoard(rows, cols, mines) {
-  const grid = [];
-  for (let r = 0; r < rows; r++) {
-    grid[r] = [];
-    for (let c = 0; c < cols; c++) grid[r][c] = { mine: false, adjacent: 0 };
-  }
-  let placed = 0;
-  while (placed < mines) {
-    const r = Math.floor(Math.random() * rows), c = Math.floor(Math.random() * cols);
-    if (!grid[r][c].mine) { grid[r][c].mine = true; placed++; }
-  }
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (grid[r][c].mine) continue;
-      let count = 0;
-      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
-        if (dr === 0 && dc === 0) continue;
-        const nr = r + dr, nc = c + dc;
-        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc].mine) count++;
-      }
-      grid[r][c].adjacent = count;
-    }
-  }
-  return { rows, cols, mines, grid };
+function randBetween(min, max) {
+  return Math.random() * (max - min) + min;
 }
 
-function countRevealed(board) {
-  let count = 0;
-  for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) if (board.grid[r][c].revealed && !board.grid[r][c].mine) count++;
-  return count;
-}
+const DIFFICULTIES = {
+  easy:   { accuracy: 0.3, delayMin: 3000, delayMax: 7000, mineHitChance: 0.40, sabotageChance: 0.15 },
+  medium: { accuracy: 0.7, delayMin: 2000, delayMax: 4000, mineHitChance: 0.15, sabotageChance: 0.10 },
+  hard:   { accuracy: 0.95, delayMin: 1000, delayMax: 2500, mineHitChance: 0.05, sabotageChance: 0.05 },
+};
 
-function floodFill(grid, rows, cols, row, col) {
-  const revealed = [];
-  const visited = new Set();
-  const stack = [[row, col]];
-  while (stack.length > 0) {
-    const [r, c] = stack.pop();
-    const key = `${r},${c}`;
-    if (r < 0 || r >= rows || c < 0 || c >= cols || visited.has(key)) continue;
-    visited.add(key);
-    const cell = grid[r][c];
-    if (cell.mine) continue;
-    const rc = { row: r, col: c, adjacent: grid[r][c].adjacent };
-    revealed.push(rc);
-    cell.revealed = true;
-    if (cell.adjacent === 0) {
-      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
-        if (dr === 0 && dc === 0) continue;
-        stack.push([r + dr, c + dc]);
-      }
-    }
-  }
-  return revealed;
-}
-
-function getConfig(d) {
-  if (d === 'easy') return { acc: 0.3, delay: [3000, 7000], sabChance: 0.05 };
-  if (d === 'hard') return { acc: 0.95, delay: [1000, 2500], sabChance: 0.15 };
-  return { acc: 0.7, delay: [2000, 4000], sabChance: 0.1 };
-}
-
+/**
+ * Creates a mock RTCDataChannel that behaves like a remote opponent.
+ *
+ * @param {object} options
+ * @param {'classic'|'duel'|'health'|'minesweeper'} options.mode
+ * @param {'easy'|'medium'|'hard'} options.difficulty
+ * @param {object} options.gameData  — game-start payload (problems, startTime, duration, mode)
+ * @param {number} [options.playerNum=2]  — which player number the bot occupies
+ */
 export function createBotDC({ mode, difficulty, gameData, playerNum = 2 }) {
-  const cfg = getConfig(difficulty);
-  const listeners = { message: [], close: [], error: [] };
-  let stopped = false;
-  const timers = [];
+  const config = DIFFICULTIES[difficulty] || DIFFICULTIES.medium;
 
-  function emit(type, payload) {
-    if (stopped) return;
-    const msg = JSON.stringify({ type, ...payload });
-    listeners.message.forEach(fn => fn({ data: msg }));
+  const listeners = { message: [], close: [], error: [] };
+  const timers = [];
+  let stopped = false;
+
+  // ---- Shared bot state ----
+  let botScore = 0;
+  let botProblemIndex = 0;
+  let botHp = 100;
+  let opponentScore = 0;
+  let opponentHp = 100;
+  let opponentRevealedCount = 0;
+
+  // ---- Minesweeper state ----
+  let minesweeperBoard = null;
+  let minesweeperRevealed = 0;
+
+  // ---- Helpers ----
+
+  function emit(msgType, payload) {
+    const json = JSON.stringify({ type: msgType, ...payload });
+    listeners.message.forEach((fn) => {
+      try { fn({ data: json }); } catch (_) { /* ignore listener errors */ }
+    });
   }
 
-  function schedule(fn, ms) {
+  function schedule(fn, delay) {
+    if (stopped) return;
     const id = setTimeout(() => {
-      const idx = timers.indexOf(id);
-      if (idx >= 0) timers.splice(idx, 1);
       if (!stopped) fn();
-    }, ms);
+    }, delay);
     timers.push(id);
   }
 
-  function startMathBot() {
-    const problems = gameData.problems || [];
-    let idx = 0, score = 0, hp = 100;
-    emit('ready-change', { ready: true });
+  function stop() {
+    stopped = true;
+    timers.forEach(clearTimeout);
+    timers.length = 0;
+  }
 
-    (function tick() {
-      if (stopped || idx >= problems.length) return;
-      const correct = Math.random() < cfg.acc;
-      if (correct && problems[idx]) {
-        score++;
-        const p = { problemIndex: idx + 1, input: '', score, hp: mode === 'health' ? hp : 100 };
-        if (mode === 'health') { p.targetHp = Math.max(0, 90); }
-        if (mode === 'duel') emit('duel-claim', { problemIndex: idx, score });
-        else emit('player-update', p);
-      } else if (problems[idx]) {
-        const wrong = (problems[idx].answer || 0) + Math.floor(Math.random() * 20 + 1);
-        emit('player-update', { problemIndex: idx + 1, input: String(wrong), score, hp: mode === 'health' ? hp : 100 });
-      }
-      idx++;
-      if (idx >= problems.length && !stopped) {
-        const o = playerNum === 1 ? 2 : 1;
-        emit('game-over', { scores: { [playerNum]: score, [o]: 0 }, winner: score > 5 ? playerNum : o });
+  // ---- Incoming message handler (player -> bot) ----
+
+  function handleIncoming(raw) {
+    if (stopped) return;
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (_) {
+      return;
+    }
+
+    switch (msg.type) {
+      case 'game-over':
+        stop();
+        break;
+
+      case 'player-update':
+        opponentScore = msg.score;
+        if (msg.hp !== undefined) opponentHp = msg.hp;
+        if (mode === 'health' && msg.targetHp !== undefined) {
+          botHp = msg.targetHp;
+          // If bot's HP reached 0, stop activity (host will send game-over)
+          if (botHp <= 0) stop();
+        }
+        break;
+
+      case 'duel-claim':
+        if (msg.problemIndex >= botProblemIndex) {
+          botProblemIndex = msg.problemIndex + 1;
+        }
+        opponentScore = msg.score;
+        break;
+
+      case 'cell-reveal':
+        if (msg.cells && Array.isArray(msg.cells)) {
+          opponentRevealedCount += msg.cells.length;
+        } else {
+          opponentRevealedCount += 1;
+        }
+        break;
+
+      case 'cell-flag':
+        // Track flags if needed — no impact on score
+        break;
+
+      case 'sabotage':
+        // Track sabotage if needed
+        break;
+
+      case 'restart':
+        // Ignored — the DC will be replaced on restart flow
+        break;
+    }
+  }
+
+  // ---- Math modes (classic, duel, health) ----
+
+  function startMathBot() {
+    const problems = gameData.problems;
+    if (!problems || problems.length === 0) return;
+
+    function mathTurn() {
+      if (stopped) return;
+
+      if (botProblemIndex >= problems.length) {
+        sendGameOver();
         return;
       }
-      schedule(tick, randBetween(cfg.delay[0], cfg.delay[1]));
-    })(randBetween(2000, 3000));
+
+      const problem = problems[botProblemIndex];
+      const isCorrect = Math.random() < config.accuracy;
+
+      if (mode === 'duel') {
+        // Duel mode: only claim on correct answer
+        if (isCorrect) {
+          botScore++;
+          const claimIdx = botProblemIndex;
+          botProblemIndex++;
+          emit('duel-claim', { problemIndex: claimIdx, score: botScore });
+        } else {
+          // Bot failed to answer; still move on (opponent may have claimed first)
+          botProblemIndex++;
+        }
+      } else {
+        // Classic / Health: always submit an answer
+        if (isCorrect) {
+          botScore++;
+          const payload = {
+            problemIndex: botProblemIndex + 1,
+            input: String(problem.answer),
+            score: botScore,
+            hp: botHp,
+          };
+
+          if (mode === 'health') {
+            opponentHp = Math.max(0, opponentHp - 10);
+            payload.targetHp = opponentHp;
+          }
+
+          emit('player-update', payload);
+          botProblemIndex++;
+
+          // Check health-mode defeat
+          if (mode === 'health' && opponentHp <= 0) {
+            sendGameOver();
+            return;
+          }
+        } else {
+          // Wrong answer — send a plausible wrong string
+          let wrongAnswer;
+          const offset = Math.floor(Math.random() * Math.max(2, Math.abs(problem.answer / 2))) + 1;
+          wrongAnswer = Math.random() < 0.5 ? problem.answer + offset : problem.answer - offset;
+          // Avoid accidentally being correct
+          if (wrongAnswer === problem.answer) wrongAnswer = problem.answer + 1;
+
+          emit('player-update', {
+            problemIndex: botProblemIndex,
+            input: String(wrongAnswer),
+            score: botScore,
+            hp: botHp,
+          });
+
+          // Advance anyway — bot doesn't get stuck on one problem forever
+          botProblemIndex++;
+        }
+      }
+
+      // Schedule next turn
+      const delay = randBetween(config.delayMin, config.delayMax);
+      schedule(mathTurn, delay);
+    }
+
+    function sendGameOver() {
+      const opponentNum = playerNum === 1 ? 2 : 1;
+      const scores = { [playerNum]: botScore, [opponentNum]: opponentScore };
+      const payload = { scores };
+
+      if (mode === 'health') {
+        payload.hp = { [playerNum]: botHp, [opponentNum]: opponentHp };
+      }
+
+      emit('game-over', payload);
+      stop();
+    }
+
+    // Kick off first turn
+    const initialDelay = randBetween(config.delayMin, config.delayMax);
+    schedule(mathTurn, initialDelay);
   }
+
+  // ---- Minesweeper mode ----
 
   function startMinesweeperBot() {
-    const board = generateBoard(9, 9, 10);
-    const grid = board.grid;
-    const revealed = new Set();
-    const flagged = new Set();
-    let first = true, playerCells = 0;
+    const SIZE = 9;
+    const TOTAL_MINES = 10;
 
-    schedule(function tick() {
+    // ----- Board generation (inline) -----
+    function generateBoard() {
+      const board = [];
+      for (let r = 0; r < SIZE; r++) {
+        board[r] = [];
+        for (let c = 0; c < SIZE; c++) {
+          board[r][c] = { mine: false, revealed: false, flagged: false, adjacent: 0 };
+        }
+      }
+
+      // Place mines
+      let placed = 0;
+      while (placed < TOTAL_MINES) {
+        const r = Math.floor(Math.random() * SIZE);
+        const c = Math.floor(Math.random() * SIZE);
+        if (!board[r][c].mine) {
+          board[r][c].mine = true;
+          placed++;
+        }
+      }
+
+      // Calculate adjacent mine counts
+      for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+          if (board[r][c].mine) continue;
+          let count = 0;
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              if (dr === 0 && dc === 0) continue;
+              const nr = r + dr;
+              const nc = c + dc;
+              if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc].mine) {
+                count++;
+              }
+            }
+          }
+          board[r][c].adjacent = count;
+        }
+      }
+
+      return board;
+    }
+
+    // ----- Flood-fill for safe zeros -----
+    function floodFill(board, row, col) {
+      const revealed = [];
+      const queue = [[row, col]];
+      const visited = new Set();
+
+      while (queue.length > 0) {
+        const [r, c] = queue.shift();
+        const key = `${r},${c}`;
+        if (visited.has(key)) continue;
+        visited.add(key);
+
+        if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) continue;
+        if (board[r][c].revealed || board[r][c].flagged) continue;
+
+        board[r][c].revealed = true;
+        revealed.push({ row: r, col: c, adjacent: board[r][c].adjacent, mine: false });
+
+        if (board[r][c].adjacent === 0) {
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              if (dr === 0 && dc === 0) continue;
+              queue.push([r + dr, c + dc]);
+            }
+          }
+        }
+      }
+
+      return revealed;
+    }
+
+    // ----- Win check -----
+    function isBoardCleared(board) {
+      for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+          if (!board[r][c].mine && !board[r][c].revealed) return false;
+        }
+      }
+      return true;
+    }
+
+    // ----- Cell helpers -----
+    function getAvailableCells(board) {
+      const cells = [];
+      for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+          if (!board[r][c].revealed && !board[r][c].flagged) {
+            cells.push({ row: r, col: c });
+          }
+        }
+      }
+      return cells;
+    }
+
+    function getCorners(board) {
+      const corners = [];
+      const positions = [[0, 0], [0, SIZE - 1], [SIZE - 1, 0], [SIZE - 1, SIZE - 1]];
+      for (const [r, c] of positions) {
+        if (!board[r][c].revealed && !board[r][c].flagged) {
+          corners.push({ row: r, col: c });
+        }
+      }
+      return corners;
+    }
+
+    function getEdges(board) {
+      const edges = [];
+      for (let c = 1; c < SIZE - 1; c++) {
+        if (!board[0][c].revealed && !board[0][c].flagged) edges.push({ row: 0, col: c });
+        if (!board[SIZE - 1][c].revealed && !board[SIZE - 1][c].flagged) edges.push({ row: SIZE - 1, col: c });
+      }
+      for (let r = 1; r < SIZE - 1; r++) {
+        if (!board[r][0].revealed && !board[r][0].flagged) edges.push({ row: r, col: 0 });
+        if (!board[r][SIZE - 1].revealed && !board[r][SIZE - 1].flagged) edges.push({ row: r, col: SIZE - 1 });
+      }
+      return edges;
+    }
+
+    // ----- Game logic -----
+    minesweeperBoard = generateBoard();
+
+    function minesweeperTurn() {
       if (stopped) return;
-      if (Math.random() < cfg.sabChance && revealed.size > 3) {
-        emit('sabotage', {});
-        schedule(tick, randBetween(cfg.delay[0], cfg.delay[1]));
-        return;
-      }
-      if (first) {
-        first = false;
-        const cells = floodFill(grid, 9, 9, 4, 4);
-        cells.forEach(c => revealed.add(`${c.row},${c.col}`));
-        emit('cell-reveal', { cells });
-        schedule(tick, randBetween(cfg.delay[0], cfg.delay[1]));
-        return;
-      }
-      const hidden = [];
-      for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
-        const k = `${r},${c}`;
-        if (!revealed.has(k) && !flagged.has(k)) hidden.push({ row: r, col: c });
-      }
-      if (hidden.length === 0 && !stopped) {
-        const o = playerNum === 1 ? 2 : 1;
-        emit('game-over', { scores: { [playerNum]: revealed.size, [o]: playerCells }, winner: playerNum });
-        return;
-      }
-      const target = pick(hidden);
-      const cell = grid[target.row][target.col];
-      const key = `${target.row},${target.col}`;
-      if (cell.mine) {
-        revealed.add(key);
-        emit('cell-reveal', { cells: [{ row: target.row, col: target.col, adjacent: -1 }] });
-        const o = playerNum === 1 ? 2 : 1;
-        emit('game-over', { scores: { [playerNum]: revealed.size - 1, [o]: playerCells }, winner: o });
-        stopped = true;
-        return;
-      }
-      const cells = floodFill(grid, 9, 9, target.row, target.col);
-      cells.forEach(c => revealed.add(`${c.row},${c.col}`));
-      emit('cell-reveal', { cells });
-      let unrevealedSafe = 0;
-      for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
-        if (!grid[r][c].mine && !revealed.has(`${r},${c}`)) unrevealedSafe++;
-      }
-      if (unrevealedSafe === 0 && !stopped) {
-        const o = playerNum === 1 ? 2 : 1;
-        emit('game-over', { scores: { [playerNum]: revealed.size, [o]: playerCells }, winner: playerNum });
-        stopped = true;
-        return;
-      }
-      schedule(tick, randBetween(cfg.delay[0], cfg.delay[1]));
-    }, randBetween(1000, 2000));
 
-    return { trackPlayerCell: () => playerCells++ };
+      // Clear check
+      if (isBoardCleared(minesweeperBoard)) {
+        emitGameOver(true);
+        return;
+      }
+
+      const isHard = difficulty === 'hard';
+
+      // ---- Smart flagging (hard mode only) ----
+      if (isHard && Math.random() < 0.3) {
+        for (let r = 0; r < SIZE; r++) {
+          for (let c = 0; c < SIZE; c++) {
+            if (!minesweeperBoard[r][c].revealed || minesweeperBoard[r][c].adjacent === 0) continue;
+
+            const unrevealed = [];
+            for (let dr = -1; dr <= 1; dr++) {
+              for (let dc = -1; dc <= 1; dc++) {
+                if (dr === 0 && dc === 0) continue;
+                const nr = r + dr;
+                const nc = c + dc;
+                if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+                if (!minesweeperBoard[nr][nc].revealed && !minesweeperBoard[nr][nc].flagged) {
+                  unrevealed.push({ row: nr, col: nc });
+                }
+              }
+            }
+
+            if (unrevealed.length === 1 && minesweeperBoard[r][c].adjacent > 0) {
+              const cell = unrevealed[0];
+              const actuallyMine = minesweeperBoard[cell.row][cell.col].mine;
+              // 70% accuracy on flagging mines
+              const shouldFlag = Math.random() < 0.7 ? actuallyMine : !actuallyMine;
+
+              if (shouldFlag) {
+                minesweeperBoard[cell.row][cell.col].flagged = true;
+                emit('cell-flag', { row: cell.row, col: cell.col, flagged: true });
+                schedule(minesweeperTurn, randBetween(config.delayMin, config.delayMax));
+                return;
+              }
+            }
+          }
+        }
+      }
+
+      // ---- Occasional sabotage ----
+      if (Math.random() < config.sabotageChance) {
+        emit('sabotage', {});
+      }
+
+      // ---- Pick a cell ----
+      let cell;
+
+      if (isHard) {
+        // Corners first, then edges, then random
+        const corners = getCorners(minesweeperBoard);
+        if (corners.length > 0) {
+          cell = corners[Math.floor(Math.random() * corners.length)];
+        } else {
+          const edges = getEdges(minesweeperBoard);
+          if (edges.length > 0 && Math.random() < 0.6) {
+            cell = edges[Math.floor(Math.random() * edges.length)];
+          } else {
+            const avail = getAvailableCells(minesweeperBoard);
+            if (avail.length === 0) { emitGameOver(true); return; }
+            cell = avail[Math.floor(Math.random() * avail.length)];
+          }
+        }
+      } else {
+        // Random click
+        const avail = getAvailableCells(minesweeperBoard);
+        if (avail.length === 0) { emitGameOver(true); return; }
+        cell = avail[Math.floor(Math.random() * avail.length)];
+      }
+
+      const cellObj = minesweeperBoard[cell.row][cell.col];
+
+      // ---- Mine hit check ----
+      if (cellObj.mine) {
+        if (Math.random() < config.mineHitChance) {
+          // Hit!
+          cellObj.revealed = true;
+          emit('cell-reveal', {
+            row: cell.row,
+            col: cell.col,
+            mineHit: true,
+            cells: [{ row: cell.row, col: cell.col, mine: true, adjacent: -1 }],
+          });
+          emitGameOver(false);
+          return;
+        } else {
+          // Lucky miss — pick a different safe cell instead
+          const safeCells = getAvailableCells(minesweeperBoard).filter(
+            (c) => !minesweeperBoard[c.row][c.col].mine
+          );
+          if (safeCells.length > 0) {
+            cell = safeCells[Math.floor(Math.random() * safeCells.length)];
+          } else {
+            // Only mines left — forced hit
+            const forced = getAvailableCells(minesweeperBoard);
+            if (forced.length === 0) { emitGameOver(true); return; }
+            cell = forced[0];
+            minesweeperBoard[cell.row][cell.col].revealed = true;
+            emit('cell-reveal', {
+              row: cell.row,
+              col: cell.col,
+              mineHit: true,
+              cells: [{ row: cell.row, col: cell.col, mine: true, adjacent: -1 }],
+            });
+            emitGameOver(false);
+            return;
+          }
+        }
+      }
+
+      // ---- Safe reveal ----
+      const revealed = floodFill(minesweeperBoard, cell.row, cell.col);
+      minesweeperRevealed += revealed.length;
+
+      emit('cell-reveal', { cells: revealed, revealedCount: revealed.length });
+
+      // Post-reveal win check
+      if (isBoardCleared(minesweeperBoard)) {
+        emitGameOver(true);
+        return;
+      }
+
+      // Schedule next turn
+      schedule(minesweeperTurn, randBetween(config.delayMin, config.delayMax));
+    }
+
+    function emitGameOver(won) {
+      const opponentNum = playerNum === 1 ? 2 : 1;
+      const score = minesweeperRevealed;
+      const oppScore = opponentRevealedCount;
+
+      emit('game-over', {
+        scores: { [playerNum]: score, [opponentNum]: oppScore },
+        won,
+      });
+      stop();
+    }
+
+    // Start first turn
+    schedule(minesweeperTurn, randBetween(config.delayMin, config.delayMax));
   }
 
-  let bot = null;
-  if (mode === 'minesweeper') bot = startMinesweeperBot();
-  else startMathBot();
+  // ---- Launch ----
+
+  if (mode === 'minesweeper') {
+    startMinesweeperBot();
+  } else {
+    startMathBot();
+  }
+
+  // ---- Return mock DataChannel ----
 
   return {
     readyState: 'open',
-    addEventListener(type, fn) { if (listeners[type]) listeners[type].push(fn); },
+
+    addEventListener(type, fn) {
+      if (listeners[type]) {
+        listeners[type].push(fn);
+      }
+    },
+
     removeEventListener(type, fn) {
-      if (listeners[type]) listeners[type] = listeners[type].filter(f => f !== fn);
+      if (listeners[type]) {
+        listeners[type] = listeners[type].filter((f) => f !== fn);
+      }
     },
+
     send(data) {
-      try {
-        const msg = JSON.parse(data);
-        if (msg.type === 'game-over') stopped = true;
-        if (msg.type === 'cell-reveal' && bot) {
-          for (const c of (msg.cells || [])) if (!c.mine) bot.trackPlayerCell();
-        }
-      } catch (e) { /* ignore malformed */ }
+      handleIncoming(data);
     },
-    close() { stopped = true; timers.forEach(clearTimeout); timers.length = 0; },
+
+    close() {
+      stop();
+    },
   };
 }
