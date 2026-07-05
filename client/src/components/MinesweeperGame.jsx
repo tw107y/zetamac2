@@ -1,300 +1,759 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { playCorrect, playWin, playLose } from '../sounds';
+import { useState, useEffect, useRef } from 'react';
+import { playWin, playLose } from '../sounds';
 
-function send(dc, msg) { if (dc && dc.readyState === 'open') dc.send(JSON.stringify(msg)); }
+const ROWS = 9;
+const COLS = 9;
+const NUM_MINES = 10;
+const TOTAL_SAFE = ROWS * COLS - NUM_MINES;
+const SABOTAGE_COOLDOWN = 15000;
+const SABOTAGE_DURATION = 3000;
 
-const ROWS = 9, COLS = 9, NUM_MINES = 10, SABOTAGE_COOLDOWN = 15000;
-const NUMBER_COLORS = { 1: '#0000ff', 2: '#008000', 3: '#ff0000', 4: '#000080', 5: '#800000', 6: '#008080', 7: '#000000', 8: '#808080' };
+const NUMBER_COLORS = {
+  1: '#0000ff',
+  2: '#008000',
+  3: '#ff0000',
+  4: '#000080',
+  5: '#800000',
+  6: '#008080',
+  7: '#000000',
+  8: '#808080',
+};
 
-function generateBoard() {
-  const grid = [];
-  for (let r = 0; r < ROWS; r++) { grid[r] = []; for (let c = 0; c < COLS; c++) grid[r][c] = { mine: false, adjacent: 0, revealed: false, flagged: false, sabotaged: false }; }
-  let p = 0; while (p < NUM_MINES) { const r = Math.floor(Math.random() * ROWS), c = Math.floor(Math.random() * COLS); if (!grid[r][c].mine) { grid[r][c].mine = true; p++; } }
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) { if (grid[r][c].mine) continue; let n = 0; for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) { if (dr === 0 && dc === 0) continue; const nr = r + dr, nc = c + dc; if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && grid[nr][nc].mine) n++; } grid[r][c].adjacent = n; }
-  return { rows: ROWS, cols: COLS, mines: NUM_MINES, grid };
+function send(dc, msg) {
+  if (dc && dc.readyState === 'open') {
+    dc.send(JSON.stringify(msg));
+  }
+}
+
+function createEmptyCell() {
+  return { mine: false, revealed: false, adjacent: 0, flagged: false, sabotaged: false };
 }
 
 function createEmptyBoard() {
-  const grid = []; for (let r = 0; r < ROWS; r++) { grid[r] = []; for (let c = 0; c < COLS; c++) grid[r][c] = { revealed: false, adjacent: 0, flagged: false, sabotaged: false }; }
-  return { rows: ROWS, cols: COLS, mines: NUM_MINES, grid };
+  const board = [];
+  for (let r = 0; r < ROWS; r++) {
+    board[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      board[r][c] = createEmptyCell();
+    }
+  }
+  return board;
 }
-function cloneBoard(b) { return { rows: b.rows, cols: b.cols, mines: b.mines, grid: b.grid.map(r => r.map(c => ({ ...c }))) }; }
-function countRevealed(b) { let n = 0; for (let r = 0; r < b.rows; r++) for (let c = 0; c < b.cols; c++) if (b.grid[r][c].revealed && !b.grid[r][c].mine) n++; return n; }
-function isWin(b) { return countRevealed(b) >= b.rows * b.cols - b.mines; }
+
+function cloneBoard(board) {
+  return board.map((row) => row.map((cell) => ({ ...cell })));
+}
+
+function generateBoard() {
+  const board = createEmptyBoard();
+
+  // Fisher-Yates shuffle of cell indices
+  const indices = [];
+  for (let i = 0; i < ROWS * COLS; i++) indices.push(i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+
+  // Place mines
+  for (let k = 0; k < NUM_MINES; k++) {
+    const idx = indices[k];
+    const r = Math.floor(idx / COLS);
+    const c = idx % COLS;
+    board[r][c].mine = true;
+  }
+
+  // Calculate adjacent counts
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c].mine) continue;
+      let count = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && board[nr][nc].mine) {
+            count++;
+          }
+        }
+      }
+      board[r][c].adjacent = count;
+    }
+  }
+
+  return board;
+}
+
+function countRevealed(board) {
+  let count = 0;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c].revealed && !board[r][c].mine) count++;
+    }
+  }
+  return count;
+}
+
+function isWin(board) {
+  return countRevealed(board) >= TOTAL_SAFE;
+}
 
 function floodFill(board, row, col) {
-  const stack = [[row, col]];
-  while (stack.length > 0) {
-    const [r, c] = stack.pop();
-    if (r < 0 || r >= board.rows || c < 0 || c >= board.cols) continue;
-    const cell = board.grid[r][c];
-    if (cell.revealed || cell.flagged || cell.mine) continue;
+  const revealed = [];
+  const queue = [[row, col]];
+  const visited = new Set();
+
+  while (queue.length > 0) {
+    const [r, c] = queue.shift();
+    const key = `${r},${c}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS) continue;
+    const cell = board[r][c];
+    if (cell.revealed || cell.flagged) continue;
+
     cell.revealed = true;
-    if (cell.adjacent === 0) for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) { if (dr === 0 && dc === 0) continue; stack.push([r + dr, c + dc]); }
+    revealed.push({ row: r, col: c, adjacent: cell.adjacent });
+
+    if (cell.adjacent === 0) {
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          queue.push([r + dr, c + dc]);
+        }
+      }
+    }
   }
+
+  return revealed;
 }
 
 function getRevealedNumberedCells(board) {
   const cells = [];
-  for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) if (board.grid[r][c].revealed && board.grid[r][c].adjacent > 0 && !board.grid[r][c].sabotaged) cells.push({ row: r, col: c });
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = board[r][c];
+      if (cell.revealed && cell.adjacent > 0 && !cell.sabotaged) {
+        cells.push({ row: r, col: c, adjacent: cell.adjacent });
+      }
+    }
+  }
   return cells;
 }
 
-function relocateMine(grid, row, col) {
-  grid[row][col].mine = false;
-  const cells = [];
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (!grid[r][c].mine && !(r === row && c === col)) cells.push({ r, c });
-  if (cells.length > 0) { const t = cells[Math.floor(Math.random() * cells.length)]; grid[t.r][t.c].mine = true; }
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    if (grid[r][c].mine) continue; let n = 0;
-    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) { if (dr === 0 && dc === 0) continue; const nr = r + dr, nc = c + dc; if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && grid[nr][nc].mine) n++; }
-    grid[r][c].adjacent = n;
+function relocateMine(board, row, col) {
+  board[row][col].mine = false;
+
+  const emptyCells = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (r === row && c === col) continue;
+      if (!board[r][c].mine) emptyCells.push([r, c]);
+    }
+  }
+
+  if (emptyCells.length === 0) return;
+
+  const [mr, mc] = emptyCells[Math.floor(Math.random() * emptyCells.length)];
+  board[mr][mc].mine = true;
+
+  // Recalculate all adjacent counts
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c].mine) continue;
+      let count = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && board[nr][nc].mine) {
+            count++;
+          }
+        }
+      }
+      board[r][c].adjacent = count;
+    }
   }
 }
 
-export default function MinesweeperGame({ dc, mode, startTime, duration, playerNum, isHost, socket, onBackToLobby, onGameEnd }) {
+function revealAllMines(board) {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c].mine) board[r][c].revealed = true;
+    }
+  }
+}
+
+export default function MinesweeperGame({
+  dc,
+  mode,
+  startTime,
+  duration,
+  playerNum,
+  isHost,
+  socket,
+  onBackToLobby,
+  onGameEnd,
+}) {
   const [myBoard, setMyBoard] = useState(() => generateBoard());
   const [opponentBoard, setOpponentBoard] = useState(() => createEmptyBoard());
   const [timeLeft, setTimeLeft] = useState(duration);
   const [gameOver, setGameOver] = useState(false);
-  const [gameResult, setGameResult] = useState(null);
-  const [finalScores, setFinalScores] = useState(null);
-  const [opponentRevealed, setOpponentRevealed] = useState(0);
-  const [flashCells, setFlashCells] = useState({});
-  const [opponentFlashCells, setOpponentFlashCells] = useState({});
+  const [scores, setScores] = useState(null);
   const [sabotageReady, setSabotageReady] = useState(true);
-  const [playedEndSound, setPlayedEndSound] = useState(false);
+  const [sabotageFlash, setSabotageFlash] = useState(null);
+  const [opponentFlash, setOpponentFlash] = useState(null);
 
   const gameOverRef = useRef(false);
-  const myBoardRef = useRef(myBoard);
-  const opponentBoardRef = useRef(opponentBoard);
+  const gracePeriodRef = useRef(false);
+  const graceTimeoutRef = useRef(null);
   const onGameEndRef = useRef(onGameEnd);
   const onBackToLobbyRef = useRef(onBackToLobby);
   const playerNumRef = useRef(playerNum);
-  const gracePeriodRef = useRef(false);
-  const graceTimeoutRef = useRef(null);
-  const flashTimeoutsRef = useRef([]);
-  const sabotageReadyRef = useRef(true);
-  const playedEndSoundRef = useRef(false);
   const opponentRevealedRef = useRef(0);
-  const firstClickRef = useRef(true);
+  const myBoardRef = useRef(myBoard);
+  const isFirstClickRef = useRef(true);
+  const sabotageReadyRef = useRef(true);
+  const sabotageFlashTimeoutRef = useRef(null);
+  const opponentFlashTimeoutRef = useRef(null);
+  const socketRef = useRef(socket);
 
-  useEffect(() => { myBoardRef.current = myBoard; }, [myBoard]);
-  useEffect(() => { opponentBoardRef.current = opponentBoard; }, [opponentBoard]);
   useEffect(() => { playerNumRef.current = playerNum; }, [playerNum]);
   useEffect(() => { onGameEndRef.current = onGameEnd; }, [onGameEnd]);
   useEffect(() => { onBackToLobbyRef.current = onBackToLobby; }, [onBackToLobby]);
-  useEffect(() => { playedEndSoundRef.current = playedEndSound; }, [playedEndSound]);
+  useEffect(() => { myBoardRef.current = myBoard; }, [myBoard]);
+  useEffect(() => { socketRef.current = socket; }, [socket]);
 
-  // Host timer
+  // ── Host-authoritative timer ────────────────────────────────────────
   useEffect(() => {
     if (!isHost) return;
+
     const tick = () => {
-      const r = Math.max(0, Math.ceil(duration - (Date.now() - startTime) / 1000));
-      setTimeLeft(r);
-      if (r <= 0 && !gracePeriodRef.current && !gameOverRef.current) {
-        gracePeriodRef.current = true; gameOverRef.current = true; setGameOver(true);
+      const elapsed = (Date.now() - startTime) / 1000;
+      const remaining = Math.max(0, Math.ceil(duration - elapsed));
+      setTimeLeft(remaining);
+
+      if (remaining <= 0 && !gracePeriodRef.current && !gameOverRef.current) {
+        gracePeriodRef.current = true;
+        gameOverRef.current = true;
+        setGameOver(true);
+
         graceTimeoutRef.current = setTimeout(() => {
-          const myC = countRevealed(myBoardRef.current), oNum = playerNumRef.current === 1 ? 2 : 1, oC = opponentRevealedRef.current;
-          const s = { [playerNumRef.current]: myC, [oNum]: oC };
-          send(dc, { type: 'game-over', scores: s, winner: null });
-          setFinalScores(s); setGameResult('timeout'); setOpponentRevealed(oC);
-          if (socket) socket.emit('game-ended');
-          if (onGameEndRef.current) onGameEndRef.current(s);
+          const pNum = playerNumRef.current;
+          const oNum = pNum === 1 ? 2 : 1;
+          const myCount = countRevealed(myBoardRef.current);
+          const oppCount = opponentRevealedRef.current;
+          const finalScores = { [pNum]: myCount, [oNum]: oppCount };
+
+          send(dc, { type: 'game-over', scores: finalScores });
+          setScores(finalScores);
+          if (socketRef.current) socketRef.current.emit('game-ended');
+
+          const won = finalScores[pNum] > finalScores[oNum];
+          if (won) playWin();
+          else if (finalScores[pNum] < finalScores[oNum]) playLose();
+
+          if (onGameEndRef.current) onGameEndRef.current(finalScores);
         }, 500);
       }
-    }; tick(); const i = setInterval(tick, 100);
-    return () => { clearInterval(i); clearTimeout(graceTimeoutRef.current); };
-  }, [isHost, startTime, duration, dc, socket]);
+    };
 
-  // Non-host timer
-  useEffect(() => {
-    if (isHost) return;
-    const tick = () => {
-      setTimeLeft(Math.max(0, Math.ceil(duration - (Date.now() - startTime) / 1000)));
-      if (timeLeft <= 0 && !gracePeriodRef.current && !gameOverRef.current) {
-        gracePeriodRef.current = true; gameOverRef.current = true;
-        send(dc, { type: 'player-update', revealed: countRevealed(myBoardRef.current) });
-      }
-    }; tick(); const i = setInterval(tick, 100);
-    return () => clearInterval(i);
-  // eslint-disable-next-line
+    tick();
+    const interval = setInterval(tick, 100);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(graceTimeoutRef.current);
+    };
   }, [isHost, startTime, duration, dc]);
 
-  // DC messages
+  // ── Non-host timer ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (isHost) return;
+
+    const tick = () => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const remaining = Math.max(0, Math.ceil(duration - elapsed));
+      setTimeLeft(remaining);
+
+      if (remaining <= 0 && !gracePeriodRef.current && !gameOverRef.current) {
+        gracePeriodRef.current = true;
+        gameOverRef.current = true;
+        send(dc, { type: 'player-update', revealed: countRevealed(myBoardRef.current) });
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 100);
+    return () => clearInterval(interval);
+  }, [isHost, startTime, duration]);
+
+  // ── Data channel messages ──────────────────────────────────────────
   useEffect(() => {
     function handleMessage(e) {
       const msg = JSON.parse(e.data);
+
       switch (msg.type) {
         case 'cell-reveal': {
-          const up = cloneBoard(opponentBoardRef.current);
-          for (const c of (msg.cells || [])) { if (c.row >= 0 && c.row < ROWS && c.col >= 0 && c.col < COLS) { up.grid[c.row][c.col].revealed = true; up.grid[c.row][c.col].adjacent = c.adjacent; } }
-          opponentBoardRef.current = up; setOpponentBoard(up);
-          const rc = countRevealed(up); opponentRevealedRef.current = rc; setOpponentRevealed(rc);
+          setOpponentBoard((prev) => {
+            const newBoard = cloneBoard(prev);
+            for (const cell of msg.cells) {
+              if (cell.row >= 0 && cell.row < ROWS && cell.col >= 0 && cell.col < COLS) {
+                newBoard[cell.row][cell.col].revealed = true;
+                newBoard[cell.row][cell.col].adjacent = cell.adjacent;
+                newBoard[cell.row][cell.col].flagged = false;
+              }
+            }
+            return newBoard;
+          });
+          opponentRevealedRef.current += msg.cells.length;
           break;
         }
+
         case 'cell-flag': {
-          const up = cloneBoard(opponentBoardRef.current);
-          if (msg.row >= 0 && msg.row < ROWS && msg.col >= 0 && msg.col < COLS) up.grid[msg.row][msg.col].flagged = msg.flagged;
-          setOpponentBoard(up);
+          setOpponentBoard((prev) => {
+            const newBoard = cloneBoard(prev);
+            if (msg.row >= 0 && msg.row < ROWS && msg.col >= 0 && msg.col < COLS) {
+              newBoard[msg.row][msg.col].flagged = msg.flagged;
+            }
+            return newBoard;
+          });
           break;
         }
+
         case 'sabotage': {
-          const targets = getRevealedNumberedCells(myBoardRef.current);
-          if (targets.length === 0) break;
-          const t = targets[Math.floor(Math.random() * targets.length)], k = `${t.row},${t.col}`;
-          setFlashCells(p => ({ ...p, [k]: true }));
-          flashTimeoutsRef.current.push(setTimeout(() => {
-            setMyBoard(p => { const n = cloneBoard(p); n.grid[t.row][t.col].sabotaged = true; return n; });
-            setFlashCells(p => { const n = { ...p }; delete n[k]; return n; });
-          }, 3000));
-          send(dc, { type: 'cell-sabotaged', row: t.row, col: t.col });
-          break;
-        }
-        case 'cell-sabotaged': {
-          setOpponentFlashCells(p => ({ ...p, [`${msg.row},${msg.col}`]: true }));
-          flashTimeoutsRef.current.push(setTimeout(() => {
-            setOpponentBoard(p => { const n = cloneBoard(p); if (msg.row >= 0 && msg.row < ROWS && msg.col >= 0 && msg.col < COLS) n.grid[msg.row][msg.col].sabotaged = true; return n; });
-            setOpponentFlashCells(p => { const n = { ...p }; delete n[`${msg.row},${msg.col}`]; return n; });
-          }, 3000));
-          break;
-        }
-        case 'game-over': {
-          gameOverRef.current = true; setGameOver(true); setFinalScores(msg.scores);
-          if (msg.winner !== undefined && msg.winner !== null) setGameResult(msg.winner === playerNumRef.current ? 'win' : 'lose');
-          else {
-            const pn = playerNumRef.current, on = pn === 1 ? 2 : 1, ms = msg.scores?.[pn] ?? 0, os = msg.scores?.[on] ?? 0;
-            setOpponentRevealed(os); setGameResult(ms > os ? 'win' : ms < os ? 'lose' : 'tie');
+          const board = myBoardRef.current;
+          const numbered = getRevealedNumberedCells(board);
+          if (numbered.length > 0) {
+            const target = numbered[Math.floor(Math.random() * numbered.length)];
+            setSabotageFlash({ row: target.row, col: target.col });
+            if (sabotageFlashTimeoutRef.current) {
+              clearTimeout(sabotageFlashTimeoutRef.current);
+            }
+            sabotageFlashTimeoutRef.current = setTimeout(() => {
+              setSabotageFlash(null);
+            }, SABOTAGE_DURATION);
+            send(dc, { type: 'cell-sabotaged', row: target.row, col: target.col });
           }
+          break;
+        }
+
+        case 'cell-sabotaged': {
+          setOpponentFlash({ row: msg.row, col: msg.col });
+          if (opponentFlashTimeoutRef.current) {
+            clearTimeout(opponentFlashTimeoutRef.current);
+          }
+          opponentFlashTimeoutRef.current = setTimeout(() => {
+            setOpponentFlash(null);
+          }, SABOTAGE_DURATION);
+          break;
+        }
+
+        case 'game-over': {
+          if (gameOverRef.current) break;
+          gameOverRef.current = true;
+          setGameOver(true);
+          setScores(msg.scores);
+
+          const pNum = playerNumRef.current;
+          const oNum = pNum === 1 ? 2 : 1;
+          const won = (msg.scores[pNum] ?? 0) > (msg.scores[oNum] ?? 0);
+          if (won) playWin();
+          else if ((msg.scores[pNum] ?? 0) < (msg.scores[oNum] ?? 0)) playLose();
+
+          if (socketRef.current) socketRef.current.emit('game-ended');
           if (onGameEndRef.current) onGameEndRef.current(msg.scores);
           break;
         }
-        case 'restart': if (onBackToLobbyRef.current) onBackToLobbyRef.current(); break;
-        case 'player-update': if (msg.revealed !== undefined) { setOpponentRevealed(msg.revealed); opponentRevealedRef.current = msg.revealed; } break;
+
+        case 'player-update': {
+          if (msg.revealedCount !== undefined) {
+            opponentRevealedRef.current = msg.revealedCount;
+          }
+          if (isHost && msg.gameOver && !gameOverRef.current) {
+            gracePeriodRef.current = true;
+            gameOverRef.current = true;
+            setGameOver(true);
+
+            const pNum = playerNumRef.current;
+            const oNum = pNum === 1 ? 2 : 1;
+            const myCount = countRevealed(myBoardRef.current);
+            const oppCount =
+              msg.myRevealedCount !== undefined
+                ? msg.myRevealedCount
+                : opponentRevealedRef.current;
+            const finalScores = { [pNum]: myCount, [oNum]: oppCount };
+
+            send(dc, { type: 'game-over', scores: finalScores });
+            setScores(finalScores);
+            if (socketRef.current) socketRef.current.emit('game-ended');
+
+            const won = finalScores[pNum] > finalScores[oNum];
+            if (won) playWin();
+            else if (finalScores[pNum] < finalScores[oNum]) playLose();
+
+            if (onGameEndRef.current) onGameEndRef.current(finalScores);
+          }
+          break;
+        }
+
+        case 'restart':
+          if (onBackToLobbyRef.current) onBackToLobbyRef.current();
+          break;
       }
     }
-    function handleDisconnect() { if (!gameOverRef.current) { gameOverRef.current = true; setGameOver(true); setFinalScores(null); setGameResult('lose'); } }
-    if (dc) { dc.addEventListener('message', handleMessage); dc.addEventListener('close', handleDisconnect); dc.addEventListener('error', handleDisconnect); }
-    return () => { if (dc) { dc.removeEventListener('message', handleMessage); dc.removeEventListener('close', handleDisconnect); dc.removeEventListener('error', handleDisconnect); } };
-  }, [dc]);
 
-  // Sound
-  useEffect(() => { if (gameOver && !playedEndSoundRef.current) { setPlayedEndSound(true); if (gameResult === 'win') playWin(); else if (gameResult === 'lose') playLose(); } }, [gameOver, gameResult]);
+    function handleDisconnect() {
+      if (!gameOverRef.current) {
+        gameOverRef.current = true;
+        setGameOver(true);
+        setScores(null);
+      }
+    }
 
-  // Cleanup
-  useEffect(() => { return () => { flashTimeoutsRef.current.forEach(clearTimeout); clearTimeout(graceTimeoutRef.current); }; }, []);
+    dc.addEventListener('message', handleMessage);
+    dc.addEventListener('close', handleDisconnect);
+    dc.addEventListener('error', handleDisconnect);
+    return () => {
+      dc.removeEventListener('message', handleMessage);
+      dc.removeEventListener('close', handleDisconnect);
+      dc.removeEventListener('error', handleDisconnect);
+    };
+  }, [dc, isHost]);
 
-  // Sabotage key handler
+  // ── Sabotage keyboard shortcut ─────────────────────────────────────
   useEffect(() => {
     function handleKeyDown(e) {
-      if (gameOverRef.current || !(e.key === 's' || e.key === 'S') || !sabotageReadyRef.current) return;
-      sabotageReadyRef.current = false; setSabotageReady(false);
-      send(dc, { type: 'sabotage' });
-      flashTimeoutsRef.current.push(setTimeout(() => { sabotageReadyRef.current = true; setSabotageReady(true); }, SABOTAGE_COOLDOWN));
+      if (e.key === 's' || e.key === 'S') {
+        if (gameOverRef.current) return;
+        if (!sabotageReadyRef.current) return;
+
+        send(dc, { type: 'sabotage' });
+        sabotageReadyRef.current = false;
+        setSabotageReady(false);
+
+        setTimeout(() => {
+          sabotageReadyRef.current = true;
+          setSabotageReady(true);
+        }, SABOTAGE_COOLDOWN);
+      }
     }
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [dc]);
 
-  // Reveal
-  const handleReveal = useCallback((row, col) => {
-    if (gameOverRef.current) return;
-    let board = myBoardRef.current;
-    let cell = board.grid[row][col];
+  // ── Cell click handlers ────────────────────────────────────────────
+  function handleCellClick(row, col) {
+    if (gameOver || gameOverRef.current) return;
+
+    const board = cloneBoard(myBoardRef.current);
+    const cell = board[row][col];
     if (cell.revealed || cell.flagged) return;
-    const isFirst = firstClickRef.current; firstClickRef.current = false;
 
-    if (cell.mine && isFirst) { const n = cloneBoard(board); relocateMine(n.grid, row, col); board = n; cell = n.grid[row][col]; setMyBoard(n); myBoardRef.current = n; }
+    // First click safety: relocate mine if first click lands on one
+    if (isFirstClickRef.current) {
+      isFirstClickRef.current = false;
+      if (cell.mine) {
+        relocateMine(board, row, col);
+      }
+    }
 
-    if (cell.mine) {
-      const n = cloneBoard(board); n.grid[row][col].revealed = true; setMyBoard(n); myBoardRef.current = n;
-      gameOverRef.current = true; setGameOver(true); setGameResult('lose');
-      const on = playerNumRef.current === 1 ? 2 : 1, oC = opponentRevealedRef.current, mC = countRevealed(n), s = { [playerNumRef.current]: mC, [on]: oC };
-      send(dc, { type: 'cell-reveal', cells: [{ row, col, adjacent: -1 }] });
-      send(dc, { type: 'game-over', scores: s, winner: on });
-      setFinalScores(s); if (isHost && socket) socket.emit('game-ended'); if (onGameEndRef.current) onGameEndRef.current(s);
+    // If cell is now a mine after relocation check (shouldn't happen if relocate worked),
+    // or if it was always a mine beyond first click — handle mine hit
+    if (board[row][col].mine) {
+      gameOverRef.current = true;
+      board[row][col].revealed = true;
+      revealAllMines(board);
+      const myCount = countRevealed(board);
+      setMyBoard(board);
+      setGameOver(true);
+
+      const pNum = playerNumRef.current;
+      const oNum = pNum === 1 ? 2 : 1;
+      const finalScores = { [pNum]: myCount, [oNum]: opponentRevealedRef.current };
+      setScores(finalScores);
+      playLose();
+
+      if (isHost) {
+        send(dc, { type: 'game-over', scores: finalScores });
+        if (socketRef.current) socketRef.current.emit('game-ended');
+        if (onGameEndRef.current) onGameEndRef.current(finalScores);
+      } else {
+        send(dc, {
+          type: 'player-update',
+          revealedCount: opponentRevealedRef.current,
+          gameOver: true,
+          myRevealedCount: myCount,
+        });
+      }
       return;
     }
 
-    const nb = cloneBoard(board); floodFill(nb, row, col); setMyBoard(nb); myBoardRef.current = nb;
-    const rc = []; for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (nb.grid[r][c].revealed !== board.grid[r][c].revealed && !nb.grid[r][c].mine) rc.push({ row: r, col: c, adjacent: nb.grid[r][c].adjacent });
-    if (rc.length > 0) send(dc, { type: 'cell-reveal', cells: rc });
+    // Safe cell: flood fill reveal
+    const revealed = floodFill(board, row, col);
+    setMyBoard(board);
+    const myCount = countRevealed(board);
 
-    if (isWin(nb)) {
-      gameOverRef.current = true; setGameOver(true); setGameResult('win');
-      const mC = countRevealed(nb), on = playerNumRef.current === 1 ? 2 : 1, oC = opponentRevealedRef.current, s = { [playerNumRef.current]: mC, [on]: oC };
-      playCorrect(); send(dc, { type: 'game-over', scores: s, winner: playerNumRef.current });
-      setFinalScores(s); if (isHost && socket) socket.emit('game-ended'); if (onGameEndRef.current) onGameEndRef.current(s);
+    send(dc, { type: 'cell-reveal', cells: revealed });
+
+    // Check win
+    if (isWin(board)) {
+      gameOverRef.current = true;
+      setGameOver(true);
+      const pNum = playerNumRef.current;
+      const oNum = pNum === 1 ? 2 : 1;
+      const finalScores = { [pNum]: myCount, [oNum]: opponentRevealedRef.current };
+      setScores(finalScores);
+      playWin();
+
+      if (isHost) {
+        send(dc, { type: 'game-over', scores: finalScores });
+        if (socketRef.current) socketRef.current.emit('game-ended');
+        if (onGameEndRef.current) onGameEndRef.current(finalScores);
+      } else {
+        send(dc, {
+          type: 'player-update',
+          revealedCount: opponentRevealedRef.current,
+          gameOver: true,
+          myRevealedCount: myCount,
+        });
+      }
     }
-  }, [isHost, socket, dc]);
+  }
 
-  // Flag
-  const handleFlag = useCallback((row, col, e) => {
-    e.preventDefault(); if (gameOverRef.current) return;
-    const board = myBoardRef.current; if (board.grid[row][col].revealed) return;
-    const n = cloneBoard(board); const f = !n.grid[row][col].flagged; n.grid[row][col].flagged = f; setMyBoard(n); myBoardRef.current = n;
-    send(dc, { type: 'cell-flag', row, col, flagged: f });
-  }, [dc]);
+  function handleRightClick(row, col) {
+    if (gameOver || gameOverRef.current) return;
+    const board = cloneBoard(myBoardRef.current);
+    const cell = board[row][col];
+    if (cell.revealed) return;
 
-  const handleRestart = () => { send(dc, { type: 'restart' }); onBackToLobby(); };
+    cell.flagged = !cell.flagged;
+    setMyBoard(board);
+    send(dc, { type: 'cell-flag', row, col, flagged: cell.flagged });
+  }
 
-  const myR = countRevealed(myBoard), total = ROWS * COLS - NUM_MINES;
+  function handleRestart() {
+    send(dc, { type: 'restart' });
+    onBackToLobby();
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────
+  const opponentNum = playerNum === 1 ? 2 : 1;
+  const myScoreDisplay = scores ? (scores[playerNum] ?? countRevealed(myBoard)) : countRevealed(myBoard);
+  const oppScoreDisplay = scores ? (scores[opponentNum] ?? opponentRevealedRef.current) : opponentRevealedRef.current;
 
   return (
     <div style={styles.wrapper}>
-      <style>{`@keyframes sabotageFlash{0%{filter:brightness(1)}100%{filter:brightness(1.8);background:#ff6b6b!important}}@keyframes heartbeat{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}`}</style>
       <div style={styles.topBar}>
-        <span style={styles.modeLabel}>💣 Minesweeper</span>
-        <span style={{ ...styles.timer, color: timeLeft <= 10 ? '#ff6b6b' : '#eee', animation: timeLeft <= 10 ? `heartbeat ${timeLeft <= 5 ? '0.4s' : '0.7s'} ease-in-out infinite` : 'none' }}>{timeLeft}s</span>
-        <div style={styles.sabotageIndicator}>
-          <span style={{ fontSize: '0.85rem', color: sabotageReady ? '#4ecca3' : '#888' }}>{sabotageReady ? 'S: Ready' : 'S: Cooldown'}</span>
-          {!sabotageReady && <div style={styles.cooldownBar}><div style={styles.cooldownFill} /></div>}
-        </div>
+        <span style={styles.modeLabel}>{'💣'} Minesweeper</span>
+        <span
+          style={{
+            ...styles.timer,
+            color: timeLeft <= 10 ? '#ff6b6b' : '#eee',
+            animation:
+              timeLeft <= 10
+                ? `heartbeat ${timeLeft <= 5 ? '0.4s' : '0.7s'} ease-in-out infinite`
+                : 'none',
+          }}
+        >
+          {timeLeft}s
+        </span>
+        <span
+          style={{
+            ...styles.sabotageIndicator,
+            color: sabotageReady ? '#4ecca3' : '#666',
+          }}
+        >
+          {sabotageReady ? '[S] {⚡} READY' : '[S] {⏳}'}
+        </span>
       </div>
-      <div style={styles.boardsRow}>
-        <div style={styles.panel}>
-          <div style={styles.panelHeader}>You <span style={{ color: '#4ecca3', fontSize: '1rem' }}>{myR}/{total}</span></div>
-          <div style={styles.board}>
-            {myBoard.grid.map((row, r) => (
-              <div key={r} style={styles.row}>{row.map((cell, c) => {
-                const k = `${r},${c}`, fl = flashCells[k];
-                let bg = '#2a2a4a'; if (cell.revealed) { if (cell.mine) bg = '#e94560'; else if (cell.sabotaged) bg = '#333'; else if (cell.adjacent === 0) bg = '#333'; else bg = '#3a3a5a'; }
-                if (cell.flagged) bg = '#2a2a4a';
-                return <div key={c} style={{ ...styles.cell, background: bg, animation: fl ? 'sabotageFlash 0.3s ease-in-out infinite alternate' : 'none', cursor: cell.revealed || gameOver ? 'default' : 'pointer' }}
-                  onClick={() => handleReveal(r, c)} onContextMenu={(e) => handleFlag(r, c, e)}>
-                  {cell.revealed && cell.mine ? <span style={{ fontSize: '1.2rem' }}>💥</span> : cell.revealed && cell.sabotaged ? <span style={{ fontSize: '1rem', color: '#888' }}>?</span> : cell.flagged ? <span style={{ fontSize: '1rem' }}>🚩</span> : cell.revealed ? (cell.adjacent === 0 ? null : <span style={{ fontWeight: 800, fontSize: '1rem', color: NUMBER_COLORS[cell.adjacent] || '#eee' }}>{cell.adjacent}</span>) : null}
-                </div>;
-              })}</div>
+
+      <div style={styles.boardsArea}>
+        {/* My board */}
+        <div style={styles.boardSection}>
+          <div style={styles.boardLabel}>
+            You{' '}
+            <span style={{ color: '#4ecca3', fontWeight: 800, fontSize: '1rem' }}>
+              {myScoreDisplay}/{TOTAL_SAFE}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            {myBoard.map((row, r) => (
+              <div key={r} style={{ display: 'flex', gap: '2px' }}>
+                {row.map((cell, c) => {
+                  const isFlash =
+                    sabotageFlash &&
+                    sabotageFlash.row === r &&
+                    sabotageFlash.col === c;
+
+                  let content = null;
+                  let bg = '#16213e';
+                  let color = '#eee';
+
+                  if (cell.revealed) {
+                    if (cell.mine) {
+                      content = '💣';
+                      bg = '#e94560';
+                    } else if (cell.adjacent > 0) {
+                      content = cell.adjacent;
+                      bg = '#ddd';
+                      color = NUMBER_COLORS[cell.adjacent] || '#000';
+                    } else {
+                      bg = '#ccc';
+                    }
+                  } else if (cell.flagged) {
+                    content = '🚩';
+                    bg = '#1a1a2e';
+                  }
+
+                  if (isFlash) {
+                    bg = '#ffd93d';
+                  }
+
+                  return (
+                    <div
+                      key={c}
+                      onClick={() => handleCellClick(r, c)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        handleRightClick(r, c);
+                      }}
+                      style={{
+                        ...styles.cell,
+                        width: 40,
+                        height: 40,
+                        background: bg,
+                        color: color,
+                        animation: isFlash
+                          ? 'heartbeat 0.5s ease-in-out infinite'
+                          : 'none',
+                        cursor:
+                          !cell.revealed && !gameOver ? 'pointer' : 'default',
+                      }}
+                    >
+                      {content}
+                    </div>
+                  );
+                })}
+              </div>
             ))}
           </div>
         </div>
+
+        {/* Divider */}
         <div style={styles.divider} />
-        <div style={styles.panel}>
-          <div style={styles.panelHeader}>Opp <span style={{ color: '#e94560', fontSize: '1rem' }}>{opponentRevealed}/{total}</span></div>
-          <div style={styles.board}>
-            {opponentBoard.grid.map((row, r) => (
-              <div key={r} style={styles.row}>{row.map((cell, c) => {
-                const k = `${r},${c}`, fl = opponentFlashCells[k];
-                let bg = '#2a2a4a'; if (cell.revealed) { if (cell.sabotaged) bg = '#333'; else if (cell.adjacent === 0) bg = '#333'; else bg = '#3a3a5a'; }
-                if (cell.flagged) bg = '#2a2a4a';
-                return <div key={c} style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '3px', userSelect: 'none', fontSize: '0.85rem', background: bg, animation: fl ? 'sabotageFlash 0.3s ease-in-out infinite alternate' : 'none', transition: 'background 0.1s ease' }}>
-                  {cell.revealed && cell.sabotaged ? <span style={{ fontSize: '0.9rem', color: '#888' }}>?</span> : cell.flagged ? <span style={{ fontSize: '0.9rem' }}>🚩</span> : cell.revealed ? (cell.adjacent === 0 ? null : <span style={{ fontWeight: 700, fontSize: '0.85rem', color: NUMBER_COLORS[cell.adjacent] || '#eee' }}>{cell.adjacent}</span>) : null}
-                </div>;
-              })}</div>
+
+        {/* Opponent board */}
+        <div style={{ ...styles.boardSection, opacity: 0.85 }}>
+          <div style={styles.boardLabel}>
+            Opp{' '}
+            <span style={{ color: '#e94560', fontWeight: 800, fontSize: '0.9rem' }}>
+              {oppScoreDisplay}/{TOTAL_SAFE}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            {opponentBoard.map((row, r) => (
+              <div key={r} style={{ display: 'flex', gap: '2px' }}>
+                {row.map((cell, c) => {
+                  const isFlash =
+                    opponentFlash &&
+                    opponentFlash.row === r &&
+                    opponentFlash.col === c;
+
+                  let content = null;
+                  let bg = '#16213e';
+                  let color = '#eee';
+
+                  if (cell.revealed) {
+                    if (cell.adjacent > 0) {
+                      content = cell.adjacent;
+                      bg = '#ddd';
+                      color = NUMBER_COLORS[cell.adjacent] || '#000';
+                    } else {
+                      bg = '#ccc';
+                    }
+                  } else if (cell.flagged) {
+                    content = '🚩';
+                    bg = '#1a1a2e';
+                  }
+
+                  if (isFlash) {
+                    bg = '#ffd93d';
+                  }
+
+                  return (
+                    <div
+                      key={c}
+                      style={{
+                        ...styles.cell,
+                        width: 36,
+                        height: 36,
+                        fontSize: '0.8rem',
+                        background: bg,
+                        color: color,
+                        animation: isFlash
+                          ? 'heartbeat 0.5s ease-in-out infinite'
+                          : 'none',
+                      }}
+                    >
+                      {content}
+                    </div>
+                  );
+                })}
+              </div>
             ))}
           </div>
         </div>
       </div>
-      {!gameOver && <div style={styles.instructions}>Left-click to reveal | Right-click to flag | Press <kbd style={styles.kbd}>S</kbd> to sabotage</div>}
+
+      <div style={styles.instructions}>
+        <span>Left-click: Reveal</span>
+        <span style={{ color: '#555' }}>|</span>
+        <span>Right-click: Flag</span>
+        <span style={{ color: '#555' }}>|</span>
+        <span>
+          Press <b>S</b>: Sabotage{' '}
+          <span style={{ color: sabotageReady ? '#4ecca3' : '#888' }}>
+            ({sabotageReady ? 'ready' : `${SABOTAGE_COOLDOWN / 1000}s cd`})
+          </span>
+        </span>
+      </div>
+
       {gameOver && (
-        <div style={styles.gameOverOverlay}>
-          <div style={styles.gameOverCard}>
-            {finalScores ? <>
-              <div style={styles.trophy}>{gameResult === 'win' ? '🏆' : gameResult === 'tie' ? '🤝' : '💀'}</div>
-              <div style={styles.resultText}>{gameResult === 'win' ? 'You Won!' : gameResult === 'lose' ? 'You Lost' : "It's a Tie!"}</div>
-              <div style={{ fontSize: '1rem', color: '#888' }}>You: {finalScores[playerNum] ?? myR} cells | Opp: {finalScores[playerNum === 1 ? 2 : 1] ?? opponentRevealed} cells</div>
-            </> : <div style={{ color: '#ff6b6b', fontSize: '1.2rem' }}>Connection lost</div>}
-            <button onClick={handleRestart} style={styles.restartBtn}>Play Again</button>
+        <div style={styles.overlay}>
+          <div style={styles.overlayContent}>
+            {scores ? (
+              <>
+                <div style={styles.trophy}>
+                  {scores[playerNum] > scores[opponentNum]
+                    ? '🏆'
+                    : scores[playerNum] < scores[opponentNum]
+                      ? '💀'
+                      : '🤝'}
+                </div>
+                <div style={styles.overlayTitle}>
+                  {scores[playerNum] > scores[opponentNum]
+                    ? 'You Won!'
+                    : scores[playerNum] < scores[opponentNum]
+                      ? 'You Lost'
+                      : "It's a Tie!"}
+                </div>
+                <div style={styles.overlayScores}>
+                  {scores[playerNum]} cells &ndash; {scores[opponentNum]} cells
+                </div>
+                <button onClick={handleRestart} style={styles.restartBtn}>
+                  Play Again
+                </button>
+              </>
+            ) : (
+              <div
+                style={{ color: '#ff6b6b', fontSize: '1.5rem', fontWeight: 700 }}
+              >
+                Connection lost
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -303,25 +762,121 @@ export default function MinesweeperGame({ dc, mode, startTime, duration, playerN
 }
 
 const styles = {
-  wrapper: { display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', gap: '12px', background: '#1a1a2e', color: '#eee', fontFamily: 'system-ui, -apple-system, sans-serif', position: 'relative' },
-  topBar: { display: 'flex', alignItems: 'center', gap: '24px', width: '100%', maxWidth: '100%', justifyContent: 'center', marginBottom: '4px' },
-  modeLabel: { fontSize: '0.95rem', color: '#e94560', fontWeight: 700 },
-  timer: { fontSize: '2rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums' },
-  sabotageIndicator: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' },
-  cooldownBar: { width: '60px', height: '4px', background: '#333', borderRadius: '2px', overflow: 'hidden' },
-  cooldownFill: { width: '100%', height: '100%', background: '#e94560', borderRadius: '2px' },
-  boardsRow: { display: 'flex', gap: '16px', flex: 1, alignItems: 'center', justifyContent: 'center', width: '100%', maxWidth: '900px' },
-  panel: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' },
-  panelHeader: { fontSize: '1rem', fontWeight: 700, display: 'flex', gap: '8px', alignItems: 'center' },
-  divider: { width: '2px', background: '#333', alignSelf: 'stretch', minHeight: '100px' },
-  board: { display: 'flex', flexDirection: 'column', gap: '2px', background: '#16213e', padding: '8px', borderRadius: '8px' },
-  row: { display: 'flex', gap: '2px' },
-  cell: { width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', userSelect: 'none', fontSize: '0.9rem', transition: 'background 0.1s ease' },
-  instructions: { fontSize: '0.8rem', color: '#666', textAlign: 'center', marginTop: '4px' },
-  kbd: { background: '#333', padding: '2px 8px', borderRadius: '4px', color: '#eee', fontWeight: 700, fontSize: '0.8rem' },
-  gameOverOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 },
-  gameOverCard: { background: '#16213e', border: '2px solid #2a2a4a', borderRadius: '16px', padding: '40px 48px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' },
-  trophy: { fontSize: '4rem', animation: 'heartbeat 0.6s ease-in-out 3' },
-  resultText: { fontSize: '1.8rem', fontWeight: 800 },
-  restartBtn: { marginTop: '8px', fontSize: '1.1rem', padding: '12px 36px', background: '#e94560', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 700, cursor: 'pointer' },
+  wrapper: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    minHeight: '100vh',
+    padding: '20px',
+    gap: '12px',
+    position: 'relative',
+  },
+  topBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '24px',
+    width: '100%',
+    maxWidth: '900px',
+    justifyContent: 'center',
+    marginBottom: '4px',
+  },
+  modeLabel: {
+    fontSize: '0.95rem',
+    color: '#e94560',
+    fontWeight: 700,
+  },
+  timer: {
+    fontSize: '2rem',
+    fontWeight: 800,
+    fontVariantNumeric: 'tabular-nums',
+  },
+  sabotageIndicator: {
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    fontFamily: 'monospace',
+  },
+  boardsArea: {
+    display: 'flex',
+    gap: '0',
+    alignItems: 'flex-start',
+    width: '100%',
+    maxWidth: '900px',
+    justifyContent: 'center',
+  },
+  boardSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 24px',
+  },
+  boardLabel: {
+    fontSize: '0.9rem',
+    fontWeight: 700,
+    display: 'flex',
+    gap: '8px',
+    alignItems: 'center',
+  },
+  divider: {
+    width: '2px',
+    background: '#333',
+    alignSelf: 'stretch',
+    marginTop: '8px',
+    marginBottom: '8px',
+  },
+  cell: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: '4px',
+    fontWeight: 700,
+    userSelect: 'none',
+    lineHeight: 1,
+    border: '1px solid #2a2a4a',
+  },
+  instructions: {
+    display: 'flex',
+    gap: '10px',
+    fontSize: '0.8rem',
+    color: '#888',
+    marginTop: '8px',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  overlay: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(10, 10, 20, 0.85)',
+    zIndex: 100,
+  },
+  overlayContent: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '36px 48px',
+    borderRadius: '12px',
+    background: '#16213e',
+    border: '2px solid #333',
+  },
+  trophy: {
+    fontSize: '4rem',
+    animation: 'heartbeat 0.6s ease-in-out 3',
+  },
+  overlayTitle: {
+    fontSize: '1.8rem',
+    fontWeight: 800,
+  },
+  overlayScores: {
+    fontSize: '1rem',
+    color: '#888',
+  },
+  restartBtn: {
+    marginTop: '8px',
+    fontSize: '1.1rem',
+    padding: '12px 36px',
+  },
 };

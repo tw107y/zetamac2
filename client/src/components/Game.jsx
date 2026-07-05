@@ -59,7 +59,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
       const remaining = Math.max(0, Math.ceil(duration - elapsed));
       setTimeLeft(remaining);
 
-      if (remaining <= 0 && !gracePeriodRef.current) {
+      if (remaining <= 0 && !gracePeriodRef.current && !gameOverRef.current) {
         gracePeriodRef.current = true;
         gameOverRef.current = true;
         setGameOver(true);
@@ -94,7 +94,7 @@ export default function Game({ dc, mode, problems, startTime, duration, playerNu
       const remaining = Math.max(0, Math.ceil(duration - elapsed));
       setTimeLeft(remaining);
 
-      if (remaining <= 0 && !gracePeriodRef.current) {
+      if (remaining <= 0 && !gracePeriodRef.current && !gameOverRef.current) {
         gracePeriodRef.current = true;
         gameOverRef.current = true;
         send(dc, { type: 'player-update', problemIndex: problemIndexRef.current, input: inputRef2.current, score: scoreRef.current, hp: hpRef.current });
