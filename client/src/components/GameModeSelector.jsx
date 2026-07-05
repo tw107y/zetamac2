@@ -51,7 +51,17 @@ const GAME_MODES = [
   },
 ];
 
+const COOP_GAME_MODES = [
+  {
+    id: 'coop-memory',
+    title: 'Memory',
+    emoji: '🧠',
+    description: 'Work together! Cards are revealed briefly, then you both find matching pairs. Difficulty increases each round.',
+  },
+];
+
 export default function GameModeSelector({ onCreateGame, error }) {
+  const [tab, setTab] = useState('vs'); // 'vs' | 'coop'
   const [selectedId, setSelectedId] = useState(null);
   const [panelClosing, setPanelClosing] = useState(false);
 
@@ -110,23 +120,35 @@ export default function GameModeSelector({ onCreateGame, error }) {
 
   const panelVisible = selectedId !== null && !panelClosing;
 
+  const modes = tab === 'vs' ? GAME_MODES : COOP_GAME_MODES;
+
   return (
     <div style={styles.page}>
-      {/* Left: game mode list */}
-      <div style={styles.listPanel}>
+      <div style={styles.main}>
         <h1 style={styles.title}>Zetamac</h1>
-        <p style={styles.subtitle}>Choose a game mode</p>
 
         {error && <p style={styles.error}>{error}</p>}
 
+        {/* Tab selector */}
+        <div style={styles.tabs}>
+          <button onClick={() => { setTab('vs'); setSelectedId(null); }}
+            style={{ ...styles.tabBtn, background: tab === 'vs' ? '#e94560' : '#2a2a4a' }}>
+            ⚔️ VS
+          </button>
+          <button onClick={() => { setTab('coop'); setSelectedId(null); }}
+            style={{ ...styles.tabBtn, background: tab === 'coop' ? '#4ecca3' : '#2a2a4a' }}>
+            🤝 Co-op
+          </button>
+        </div>
+
         <div style={styles.modeList}>
-          {GAME_MODES.map((mode) => (
+          {modes.map((mode) => (
             <button
               key={mode.id}
               onClick={() => handleSelect(mode.id)}
               style={{
                 ...styles.modeCard,
-                borderColor: selectedId === mode.id ? '#e94560' : '#2a2a4a',
+                borderColor: selectedId === mode.id ? (tab === 'coop' ? '#4ecca3' : '#e94560') : '#2a2a4a',
                 background: selectedId === mode.id ? '#1e1e3f' : '#16213e',
               }}
             >
@@ -138,6 +160,11 @@ export default function GameModeSelector({ onCreateGame, error }) {
             </button>
           ))}
         </div>
+        {tab === 'coop' && (
+          <p style={{ color: '#888', fontSize: '0.8rem', marginTop: '12px' }}>
+            Co-op games can be played solo or with a friend. No bots.
+          </p>
+        )}
       </div>
 
       {/* Right: detail panel */}
@@ -185,12 +212,12 @@ const styles = {
     overflow: 'hidden',
     position: 'relative',
   },
-  listPanel: {
+  main: {
     flex: 1,
     padding: '60px 40px',
     display: 'flex',
     flexDirection: 'column',
-    maxWidth: '600px',
+    maxWidth: '650px',
   },
   title: {
     fontSize: '2.8rem',
@@ -198,11 +225,8 @@ const styles = {
     color: '#e94560',
     marginBottom: '4px',
   },
-  subtitle: {
-    fontSize: '1.05rem',
-    color: '#888',
-    marginBottom: '32px',
-  },
+  tabs: { display: 'flex', gap: '8px', marginBottom: '20px' },
+  tabBtn: { padding: '8px 20px', borderRadius: '6px', border: 'none', color: '#fff', fontWeight: 700, fontSize: '0.9rem', cursor: 'pointer', transition: 'background 0.15s' },
   error: {
     background: '#3d1117',
     color: '#ff6b6b',

@@ -11,6 +11,7 @@ import ReactionGame from './components/ReactionGame';
 import AngryBirdsGame from './components/AngryBirdsGame';
 import ColorGame from './components/ColorGame';
 import TapperGame from './components/TapperGame';
+import CoopMemoryGame from './components/CoopMemoryGame';
 
 export default function App() {
   const [screen, setScreen] = useState('menu');
@@ -335,6 +336,17 @@ export default function App() {
             dc={dc}
             startTime={gameData.startTime}
             duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+        {gameMode === 'coop-memory' && (
+          <CoopMemoryGame
+            dc={dc}
+            startTime={gameData.startTime}
             playerNum={playerNum}
             isHost={isHost}
             socket={socket}
