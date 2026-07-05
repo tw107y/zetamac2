@@ -163,9 +163,18 @@ export default function Lobby({ dc, socket, gameId, playerNum, isHost, mode, las
         if (!gameStartedRef.current) {
           gameStartedRef.current = true;
           if (isHost) socket.emit('game-started');
-          const problems = generateProblems(120);
           const startTime = Date.now();
-          const data = { type: 'game-start', problems, startTime, duration: gameDuration, mode };
+          let data;
+          if (mode === 'classic' || mode === 'duel' || mode === 'health') {
+            const problems = generateProblems(120);
+            data = { type: 'game-start', problems, startTime, duration: gameDuration, mode };
+          } else if (mode === 'memory') {
+            const layoutSeed = Math.floor(Math.random() * 1000000);
+            data = { type: 'game-start', layoutSeed, startTime, duration: gameDuration, mode };
+          } else {
+            // reaction, angrybirds, color, tapper
+            data = { type: 'game-start', startTime, duration: gameDuration, mode };
+          }
           send(dc, data);
           setCountdown(null);
           onGameStart(data);

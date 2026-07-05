@@ -6,6 +6,11 @@ import GameModeSelector from './components/GameModeSelector';
 import Lobby from './components/Lobby';
 import Game from './components/Game';
 import MinesweeperGame from './components/MinesweeperGame';
+import MemoryGame from './components/MemoryGame';
+import ReactionGame from './components/ReactionGame';
+import AngryBirdsGame from './components/AngryBirdsGame';
+import ColorGame from './components/ColorGame';
+import TapperGame from './components/TapperGame';
 
 export default function App() {
   const [screen, setScreen] = useState('menu');
@@ -260,36 +265,98 @@ export default function App() {
     );
   }
 
-  if (screen === 'game' && dc && gameData && gameMode === 'minesweeper') {
-    return (
-      <MinesweeperGame
-        dc={dc}
-        mode={gameMode}
-        startTime={gameData.startTime}
-        duration={gameData.duration}
-        playerNum={playerNum}
-        isHost={isHost}
-        socket={socket}
-        onBackToLobby={handleBackToLobby}
-        onGameEnd={handleGameEnd}
-      />
-    );
-  }
-
   if (screen === 'game' && dc && gameData) {
     return (
-      <Game
-        dc={dc}
-        mode={gameMode}
-        problems={gameData.problems}
-        startTime={gameData.startTime}
-        duration={gameData.duration}
-        playerNum={playerNum}
-        isHost={isHost}
-        socket={socket}
-        onBackToLobby={handleBackToLobby}
-        onGameEnd={handleGameEnd}
-      />
+      <>
+        {gameMode === 'minesweeper' && (
+          <MinesweeperGame
+            dc={dc}
+            mode={gameMode}
+            startTime={gameData.startTime}
+            duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+        {gameMode === 'memory' && (
+          <MemoryGame
+            dc={dc}
+            layoutSeed={gameData.layoutSeed}
+            startTime={gameData.startTime}
+            duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+        {gameMode === 'reaction' && (
+          <ReactionGame
+            dc={dc}
+            startTime={gameData.startTime}
+            duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+        {gameMode === 'angrybirds' && (
+          <AngryBirdsGame
+            dc={dc}
+            startTime={gameData.startTime}
+            duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+        {gameMode === 'color' && (
+          <ColorGame
+            dc={dc}
+            startTime={gameData.startTime}
+            duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+        {gameMode === 'tapper' && (
+          <TapperGame
+            dc={dc}
+            startTime={gameData.startTime}
+            duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+        {(gameMode === 'classic' || gameMode === 'duel' || gameMode === 'health') && (
+          <Game
+            dc={dc}
+            mode={gameMode}
+            problems={gameData.problems}
+            startTime={gameData.startTime}
+            duration={gameData.duration}
+            playerNum={playerNum}
+            isHost={isHost}
+            socket={socket}
+            onBackToLobby={handleBackToLobby}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+      </>
     );
   }
 

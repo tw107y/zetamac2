@@ -29,6 +29,26 @@ const GAME_MODES = [
     description:
       'Problems get harder with each correct answer. Rally back and forth until someone breaks. Longest rally wins.',
   },
+  {
+    id: 'memory', title: 'Memory Match', emoji: '🃏',
+    description: 'Same card grid, race to find all 8 pairs. Finding a match briefly reveals a card on your opponent\'s board — use that intel wisely!',
+  },
+  {
+    id: 'reaction', title: 'Reaction Duel', emoji: '⚡',
+    description: 'Green circles appear — first to click scores. But red circles are FAKES that cost you a point. 20 targets, pure chaos.',
+  },
+  {
+    id: 'angrybirds', title: 'Angry Birds', emoji: '🐦',
+    description: 'Both fire cannonballs at a shared block tower. Drag to aim, release to fire. Destroy more blocks than your opponent to win!',
+  },
+  {
+    id: 'color', title: 'Color Chaos', emoji: '🎨',
+    description: 'A color WORD appears in a different INK color. Press the button matching the INK color — not the word. Your brain will hate you.',
+  },
+  {
+    id: 'tapper', title: 'Speed Tapper', emoji: '👆',
+    description: 'Mash the button as fast as you can! But bombs appear randomly — hitting one costs 3 points. Press Space or tap furiously.',
+  },
 ];
 
 export default function GameModeSelector({ onCreateGame, error }) {
